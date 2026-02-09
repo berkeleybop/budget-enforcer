@@ -3,17 +3,34 @@
 ## Overview
 
 GCP Billing sends alert to Pub/Sub topic -> Cloud Run service receives
-Pub/Sub message -> Service disables the service account JSON key via IAM
-API -> App can no longer make Vertex AI API calls -> Admin is notified and
-can investigate -> Keys can be re-enabled via `gcloud` CLI or Cloud Console
+Pub/Sub message -> Service disables the **API consumer** service account's
+JSON key via IAM API -> App can no longer make Vertex AI API calls -> Admin
+is notified and can investigate -> Keys can be re-enabled via `gcloud` CLI
 -> Service can resume once budget is addressed.
+
+## Account Model — Three Identities
+
+There are three distinct identities used in this setup. Mixing them up will
+lock you out of admin operations.
+
+| Identity | Email | Role | Purpose |
+|---|---|---|---|
+| **Personal (Owner)** | smoxon@... (your Google login) | Owner | IAM policy bindings on Cloud Run (Editor cannot do `run.services.setIamPolicy`) |
+| **Admin SA** | `nmdc-llm-admin-service@nmdc-llm.iam.gserviceaccount.com` | Editor, Service Account Key Admin, Service Usage Admin, Project IAM Admin | Runs budget-enforcer Cloud Run service; **performs** key disabling |
+| **API consumer SA** | `nmdc-llm-service-account@nmdc-llm.iam.gserviceaccount.com` | Vertex AI User | Used by your application to call Vertex AI; **gets its keys disabled** by budget-enforcer |
+
+> **Critical:** `SERVICE_ACCOUNT_EMAIL` must point at the **API consumer SA**,
+> never the admin SA. If you point it at the admin SA, the budget enforcer
+> disables the very account that manages the project — locking you out.
 
 ## Prerequisites
 
 - `gcloud` CLI installed locally
-- An "admin" service account already created in the GCP console with the
+- An "admin" service account (`nmdc-llm-admin-service`) with the
   following roles: **Service Account Key Admin**, **Service Usage Admin**,
   **Editor**, and **Project IAM Admin**
+- A separate "API consumer" service account (`nmdc-llm-service-account`)
+  used by your application for Vertex AI calls
 - The admin service account's JSON key file downloaded locally
 - Access to a personal Google account with **Owner** role on the project
   (required for IAM policy binding on Cloud Run — the admin service account's
@@ -26,10 +43,13 @@ can investigate -> Keys can be re-enabled via `gcloud` CLI or Cloud Console
 ```bash
 export PROJECT_ID=nmdc-llm
 export KEY_FILE=/Users/SMoxon/Desktop/nmdc-llm-1be4580146c4.json
-export ADMIN_USER=nmdc-llm-admin-service
+export ADMIN_SA=nmdc-llm-admin-service
+export CONSUMER_SA=nmdc-llm-service-account
 ```
 
 ## 2. Authenticate and configure project
+
+> **Run as: Admin SA**
 
 ```bash
 gcloud auth activate-service-account --key-file=$KEY_FILE
@@ -37,6 +57,8 @@ gcloud config set project $PROJECT_ID
 ```
 
 ## 3. Enable required APIs
+
+> **Run as: Admin SA**
 
 ```bash
 gcloud services enable run.googleapis.com
@@ -46,6 +68,8 @@ gcloud services enable cloudbuild.googleapis.com
 ```
 
 ## 4. Create Pub/Sub topic
+
+> **Run as: Admin SA**
 
 ```bash
 gcloud pubsub topics create budget-alerts-01 --project=$PROJECT_ID
@@ -59,6 +83,8 @@ gcloud pubsub topics list --project=$PROJECT_ID
 
 ## 5. Deploy Cloud Run service
 
+> **Run as: Admin SA**
+
 > **Important:** Run this command from the `budget-enforcer` repo directory.
 > The `--source .` flag uploads the current directory — if run from `~` or
 > another location, it will attempt to upload everything in that directory.
@@ -66,10 +92,14 @@ gcloud pubsub topics list --project=$PROJECT_ID
 > **Important:** The `--set-env-vars` flag and its value must be on the same
 > line with no line breaks.
 
+> **Critical:** `SERVICE_ACCOUNT_EMAIL` must be the **API consumer SA**
+> (`$CONSUMER_SA`), NOT the admin SA. The budget enforcer disables keys on
+> whichever account this variable points to.
+
 ```bash
 cd /path/to/budget-enforcer
 
-gcloud run deploy budget-enforcer --source . --platform managed --region us-central1 --no-allow-unauthenticated --set-env-vars SERVICE_ACCOUNT_EMAIL=${ADMIN_USER}@${PROJECT_ID}.iam.gserviceaccount.com,GCP_PROJECT_ID=${PROJECT_ID}
+gcloud run deploy budget-enforcer --source . --platform managed --region us-central1 --no-allow-unauthenticated --set-env-vars SERVICE_ACCOUNT_EMAIL=${CONSUMER_SA}@${PROJECT_ID}.iam.gserviceaccount.com,GCP_PROJECT_ID=${PROJECT_ID},USAGE_HOURLY_LIMIT=10.00,USAGE_DAILY_LIMIT=50.00
 ```
 
 > **Note:** We use `--no-allow-unauthenticated` because only Pub/Sub should
@@ -84,8 +114,11 @@ export SERVICE_URL=$(gcloud run services describe budget-enforcer --region us-ce
 
 ## 6. Create a Pub/Sub invoker service account
 
+> **Run as: Admin SA**
+
 This service account is used by Pub/Sub to authenticate when pushing
-messages to Cloud Run. This is separate from the admin service account.
+messages to Cloud Run. This is separate from both the admin and consumer
+service accounts.
 
 ```bash
 gcloud iam service-accounts create pubsub-invoker \
@@ -95,13 +128,14 @@ gcloud iam service-accounts create pubsub-invoker \
 
 ## 7. Grant the invoker service account permission to call Cloud Run
 
-> **Important:** This command requires the `run.services.setIamPolicy`
-> permission, which the admin service account's Editor role does **not**
-> include. You must run this as your personal Google account (with Owner
-> role), then switch back to the admin service account afterward.
+> **Run as: Personal account (smoxon) — then switch back to Admin SA**
+>
+> This command requires `run.services.setIamPolicy`, which the admin SA's
+> Editor role does **not** include. You must run this as your personal
+> Google account (Owner role).
 
 ```bash
-# Switch to personal account
+# === SWITCH TO: Personal account (smoxon) ===
 gcloud auth login
 gcloud config set project $PROJECT_ID
 
@@ -112,12 +146,14 @@ gcloud run services add-iam-policy-binding budget-enforcer \
   --member="serviceAccount:pubsub-invoker@${PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/run.invoker"
 
-# Switch back to admin service account
+# === SWITCH BACK TO: Admin SA ===
 gcloud auth activate-service-account --key-file=$KEY_FILE
 gcloud config set project $PROJECT_ID
 ```
 
 ## 8. Create Pub/Sub subscription with OIDC authentication
+
+> **Run as: Admin SA**
 
 ```bash
 gcloud pubsub subscriptions create budget-alerts-sub-01 \
@@ -168,7 +204,71 @@ gcloud pubsub subscriptions update budget-alerts-sub-01 \
 > The budget-enforcer only disables service account keys — it does not send
 > notifications.
 
-## 10. Verify the setup
+## 10. Set up Cloud Scheduler for token usage monitoring
+
+> **Run as: Admin SA**
+
+The budget-enforcer includes a `/check-usage` endpoint that queries Cloud
+Monitoring for real-time Vertex AI token usage and disables service account
+keys if cost thresholds are exceeded. This fills the gap where Google
+Billing notifications can be delayed 12-24 hours.
+
+### Enable Cloud Scheduler API
+
+```bash
+gcloud services enable cloudscheduler.googleapis.com --project=$PROJECT_ID
+```
+
+### Create the scheduler job
+
+Reuses the `pubsub-invoker` service account (already has `roles/run.invoker`).
+
+```bash
+export SERVICE_URL=$(gcloud run services describe budget-enforcer \
+  --region=us-central1 --format="value(status.url)")
+
+gcloud scheduler jobs create http check-vertex-usage \
+  --project=$PROJECT_ID \
+  --location=us-central1 \
+  --schedule="*/5 * * * *" \
+  --uri="${SERVICE_URL}/check-usage" \
+  --http-method=GET \
+  --oidc-service-account-email=pubsub-invoker@${PROJECT_ID}.iam.gserviceaccount.com \
+  --oidc-token-audience="${SERVICE_URL}"
+```
+
+### Adjust thresholds
+
+Thresholds are set via Cloud Run environment variables:
+
+- `USAGE_HOURLY_LIMIT` (default: $10.00) — max estimated cost in a 1-hour rolling window
+- `USAGE_DAILY_LIMIT` (default: $50.00) — max estimated cost in a 24-hour rolling window
+
+To change thresholds without redeploying:
+
+```bash
+gcloud run services update budget-enforcer \
+  --region=us-central1 \
+  --update-env-vars USAGE_HOURLY_LIMIT=5.00,USAGE_DAILY_LIMIT=25.00
+```
+
+### Test the scheduler manually
+
+```bash
+gcloud scheduler jobs run check-vertex-usage \
+  --project=$PROJECT_ID \
+  --location=us-central1
+```
+
+Then check logs:
+
+```bash
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=budget-enforcer AND textPayload:\"Usage check complete\"" --project=$PROJECT_ID --limit=5 --format="table(timestamp, textPayload)"
+```
+
+## 11. Verify the setup
+
+> **Run as: Admin SA**
 
 Send a test Pub/Sub message simulating a budget exceeded notification:
 
@@ -180,8 +280,9 @@ gcloud pubsub topics publish budget-alerts-01 \
 
 > **Warning:** This test message has `costAmount >= budgetAmount`, so the
 > budget-enforcer will actually call `disable_service_account_keys()` and
-> disable any user-managed keys on the admin service account. Be prepared to
-> re-enable them afterward (see "Re-enabling keys" section below).
+> disable any user-managed keys on the **API consumer SA**
+> (`nmdc-llm-service-account`). Be prepared to re-enable them afterward
+> (see "Re-enabling keys" section below).
 
 Then check Cloud Run logs:
 
@@ -205,15 +306,17 @@ it without redeploying:
 export PROJECT_ID=nmdc-llm
 export KEY_FILE=/Users/SMoxon/Desktop/nmdc-llm-1be4580146c4.json
 
-# Create the invoker service account (as admin)
+# === RUN AS: Admin SA ===
 gcloud auth activate-service-account --key-file=$KEY_FILE
 gcloud config set project $PROJECT_ID
 
+# Create the invoker service account
 gcloud iam service-accounts create pubsub-invoker \
   --project=$PROJECT_ID \
   --display-name="Pub/Sub Cloud Run Invoker"
 
-# Grant Cloud Run invoker permissions (requires personal/Owner account)
+# === SWITCH TO: Personal account (smoxon) ===
+# (Editor cannot do run.services.setIamPolicy)
 gcloud auth login
 gcloud config set project $PROJECT_ID
 
@@ -223,7 +326,7 @@ gcloud run services add-iam-policy-binding budget-enforcer \
   --member="serviceAccount:pubsub-invoker@${PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/run.invoker"
 
-# Switch back to admin service account
+# === SWITCH BACK TO: Admin SA ===
 gcloud auth activate-service-account --key-file=$KEY_FILE
 gcloud config set project $PROJECT_ID
 
@@ -241,18 +344,47 @@ gcloud pubsub subscriptions update budget-alerts-sub-01 \
 
 ## Re-enabling keys after budget is addressed
 
-List keys to find disabled ones:
+> **Run as: Admin SA** (or Personal account if the admin SA key was
+> accidentally disabled — see "Emergency recovery" below)
+
+List keys on the API consumer SA to find disabled ones:
 
 ```bash
 gcloud iam service-accounts keys list \
-  --iam-account=${ADMIN_USER}@${PROJECT_ID}.iam.gserviceaccount.com
+  --iam-account=${CONSUMER_SA}@${PROJECT_ID}.iam.gserviceaccount.com
 ```
 
 Re-enable a specific key:
 
 ```bash
 gcloud iam service-accounts keys enable <KEY_ID> \
-  --iam-account=${ADMIN_USER}@${PROJECT_ID}.iam.gserviceaccount.com
+  --iam-account=${CONSUMER_SA}@${PROJECT_ID}.iam.gserviceaccount.com
+```
+
+### Emergency recovery — admin SA key was disabled
+
+If `SERVICE_ACCOUNT_EMAIL` was accidentally set to the admin SA and its
+keys got disabled, you cannot use the admin SA to fix it. Switch to your
+personal account:
+
+```bash
+# === SWITCH TO: Personal account (smoxon) ===
+gcloud auth login
+gcloud config set project $PROJECT_ID
+
+# List admin SA keys
+gcloud iam service-accounts keys list \
+  --iam-account=${ADMIN_SA}@${PROJECT_ID}.iam.gserviceaccount.com
+
+# Re-enable the admin SA key
+gcloud iam service-accounts keys enable <KEY_ID> \
+  --iam-account=${ADMIN_SA}@${PROJECT_ID}.iam.gserviceaccount.com
+
+# Then fix the deployment to target the consumer SA instead
+gcloud run services update budget-enforcer \
+  --set-env-vars SERVICE_ACCOUNT_EMAIL=${CONSUMER_SA}@${PROJECT_ID}.iam.gserviceaccount.com,GCP_PROJECT_ID=${PROJECT_ID},USAGE_HOURLY_LIMIT=10.00,USAGE_DAILY_LIMIT=50.00 \
+  --region=us-central1 \
+  --project=$PROJECT_ID
 ```
 
 ---
@@ -261,9 +393,13 @@ gcloud iam service-accounts keys enable <KEY_ID> \
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| **Admin SA key disabled after budget alert** | `SERVICE_ACCOUNT_EMAIL` pointing at admin SA instead of consumer SA | See "Emergency recovery" section; update env var to `$CONSUMER_SA` |
 | 403 in Cloud Run logs | Pub/Sub subscription missing OIDC auth | See "Fixing an existing deployment" |
 | 500 in Cloud Run logs | Code error in budget-enforcer | Check full logs with `gcloud logging read` |
 | Budget email received but keys not disabled | Pub/Sub not reaching Cloud Run | Check subscription exists and points to correct endpoint |
-| `PERMISSION_DENIED` on `add-iam-policy-binding` | Running as admin service account instead of Owner | Switch to personal account with `gcloud auth login` |
+| `PERMISSION_DENIED` on `add-iam-policy-binding` | Running as admin SA instead of personal account | Switch to personal account with `gcloud auth login` |
 | `--set-env-vars` parse error | Line break in deploy command | Ensure the entire deploy command is on one line |
 | Uploading too many files on deploy | Running `--source .` from wrong directory | `cd` into the budget-enforcer repo first |
+| `/check-usage` returns `hourly_error` | Cloud Run SA lacks monitoring.viewer role | Grant `roles/monitoring.viewer` to the Cloud Run service account |
+| Scheduler job shows 403 | OIDC auth not configured or invoker SA lacks run.invoker | Re-run IAM binding command from step 7 |
+| Cost shows $0 but usage exists | Model not in PRICING dict | Add the model to PRICING in `main.py` and redeploy |
