@@ -70,7 +70,7 @@ def disable_service_account_keys():
    # Disable each key
    for key in keys.keys:
        # Skip Google-managed keys (only disable user-managed keys)
-       if key.key_type == iam_admin_v1.ServiceAccountKeyType.USER_MANAGED:
+       if key.key_type == iam_admin_v1.ListServiceAccountKeysRequest.KeyType.USER_MANAGED:
            disable_request = iam_admin_v1.DisableServiceAccountKeyRequest(
                name=key.name
            )
