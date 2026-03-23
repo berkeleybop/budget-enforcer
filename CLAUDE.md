@@ -69,18 +69,31 @@ There is no shared remote backend. Each developer keeps their own
 
 ### Authentication for Terraform
 
-Terraform must run as your **personal Google account** (Owner role),
-not as a service account. This is because:
-- IAM policy bindings on Cloud Run require `run.services.setIamPolicy`,
-  which the admin SA's Editor role does not include.
-- Billing budget creation requires billing account access.
-- The provider uses `billing_project` and `user_project_override` to
+Terraform can run as either a **personal Google account** or a
+**service account** with sufficient permissions. In testing, a service
+account with Editor + Project IAM Admin + Service Account Key Admin
+roles was sufficient to create all resources, including the Cloud Run
+IAM binding that the manual SOP requires Owner for.
+
+The key permission requirements are:
+- **Cloud Run IAM bindings**: The manual SOP requires Owner because
+  `gcloud run services add-iam-policy-binding` needs
+  `run.services.setIamPolicy`. Terraform's IAM resources use a
+  different API path and work with Project IAM Admin.
+- **Billing budget creation**: Requires access to the billing account.
+  The provider uses `billing_project` and `user_project_override` to
   route Billing Budget API calls through your project's quota (without
   these, ADC gets a 403 "requires a quota project" error).
 
-Authenticate with:
+If using a personal account:
 ```bash
 gcloud auth application-default login
+```
+
+If using a service account:
+```bash
+gcloud auth activate-service-account --key-file=PATH_TO_KEY.json
+export GOOGLE_APPLICATION_CREDENTIALS=PATH_TO_KEY.json
 ```
 
 ## Secrets and credentials

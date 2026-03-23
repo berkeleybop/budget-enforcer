@@ -11,8 +11,9 @@
 #   3. Container image built and pushed (see variable "container_image")
 #   4. Consumer SA JSON key created (see docs/MANUAL_STEPS.md)
 #
-# Run as: Your personal Google account (Owner role) via:
-#   gcloud auth application-default login
+# Run as: A personal account (Owner) or a service account with sufficient
+# permissions (Editor + Project IAM Admin + Service Account Key Admin).
+# See CLAUDE.md "Authentication for Terraform" for details.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
