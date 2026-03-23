@@ -43,6 +43,29 @@ output "pubsub_subscription" {
 # developers can use these env vars to configure Claude Code.
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Verification commands
+#
+# After apply, use these to test the full pipeline end-to-end.
+# WARNING: The test_publish_command WILL disable the consumer SA's keys.
+# Re-enable them afterward with the key_reenable_command.
+# -----------------------------------------------------------------------------
+
+output "test_publish_command" {
+  value       = "gcloud pubsub topics publish ${google_pubsub_topic.budget_alerts.name} --project=${var.project_id} --message='{\"budgetAmount\": 0.01, \"costAmount\": 0.02, \"budgetDisplayName\": \"terraform-test\"}'"
+  description = "Command to send a test budget alert. WARNING: This will disable consumer SA keys."
+}
+
+output "check_logs_command" {
+  value       = "gcloud logging read \"resource.type=cloud_run_revision AND resource.labels.service_name=${google_cloud_run_v2_service.budget_enforcer.name}\" --project=${var.project_id} --limit=5 --format=\"table(timestamp, textPayload, httpRequest.status)\""
+  description = "Command to check Cloud Run logs after a test."
+}
+
+output "list_keys_command" {
+  value       = "gcloud iam service-accounts keys list --iam-account=${google_service_account.consumer.email} --project=${var.project_id}"
+  description = "Command to list consumer SA keys and check disabled status."
+}
+
 output "claude_code_env_snippet" {
   value = <<-EOT
     # Claude Code configuration for Vertex AI

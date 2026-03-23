@@ -28,6 +28,7 @@ locals {
     "cloudscheduler.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "monitoring.googleapis.com",
+    "billingbudgets.googleapis.com",
   ]
 }
 
@@ -41,13 +42,15 @@ resource "google_project_service" "apis" {
 
 # -----------------------------------------------------------------------------
 # Service accounts
+# All names are prefixed with var.resource_prefix (default: "tf") to
+# distinguish Terraform-managed resources from manually created ones.
 # -----------------------------------------------------------------------------
 
 # The API consumer SA — used by applications (e.g. Claude Code) to call
 # Vertex AI. The budget-enforcer disables THIS account's keys.
 resource "google_service_account" "consumer" {
-  account_id   = var.consumer_sa_name
-  display_name = "Vertex AI API Consumer"
+  account_id   = "${var.resource_prefix}-${var.consumer_sa_name}"
+  display_name = "${var.resource_prefix} Vertex AI API Consumer"
   description  = "Used by applications to access Vertex AI. Keys are disabled by budget-enforcer when spend exceeds threshold."
   project      = var.project_id
 }
@@ -55,8 +58,8 @@ resource "google_service_account" "consumer" {
 # The admin SA — runs the budget-enforcer Cloud Run service.
 # Has elevated permissions to disable the consumer SA's keys.
 resource "google_service_account" "admin" {
-  account_id   = var.admin_sa_name
-  display_name = "Budget Enforcer Admin"
+  account_id   = "${var.resource_prefix}-${var.admin_sa_name}"
+  display_name = "${var.resource_prefix} Budget Enforcer Admin"
   description  = "Runs the budget-enforcer Cloud Run service. Can disable consumer SA keys. NEVER point SERVICE_ACCOUNT_EMAIL at this SA."
   project      = var.project_id
 }
@@ -64,8 +67,8 @@ resource "google_service_account" "admin" {
 # The Pub/Sub invoker SA — used by Pub/Sub to authenticate when pushing
 # messages to Cloud Run. Separate from both admin and consumer SAs.
 resource "google_service_account" "invoker" {
-  account_id   = "pubsub-invoker"
-  display_name = "Pub/Sub Cloud Run Invoker"
+  account_id   = "${var.resource_prefix}-pubsub-invoker"
+  display_name = "${var.resource_prefix} Pub/Sub Cloud Run Invoker"
   description  = "Used by Pub/Sub to send OIDC-authenticated requests to Cloud Run."
   project      = var.project_id
 }
@@ -131,7 +134,7 @@ resource "google_project_iam_member" "admin_monitoring_viewer" {
 # -----------------------------------------------------------------------------
 
 resource "google_pubsub_topic" "budget_alerts" {
-  name    = "budget-alerts-01"
+  name    = "${var.resource_prefix}-budget-alerts"
   project = var.project_id
 
   depends_on = [google_project_service.apis["pubsub.googleapis.com"]]
@@ -142,7 +145,7 @@ resource "google_pubsub_topic" "budget_alerts" {
 # -----------------------------------------------------------------------------
 
 resource "google_cloud_run_v2_service" "budget_enforcer" {
-  name     = "budget-enforcer"
+  name     = "${var.resource_prefix}-budget-enforcer"
   location = var.cloud_run_region
   project  = var.project_id
 
@@ -196,7 +199,7 @@ resource "google_cloud_run_v2_service_iam_member" "invoker" {
 # The push-auth-service-account is the critical piece that the manual SOP
 # often gets wrong, causing silent 403 failures.
 resource "google_pubsub_subscription" "budget_alerts" {
-  name    = "budget-alerts-sub-01"
+  name    = "${var.resource_prefix}-budget-alerts-sub"
   topic   = google_pubsub_topic.budget_alerts.id
   project = var.project_id
 
@@ -217,7 +220,7 @@ resource "google_pubsub_subscription" "budget_alerts" {
 # -----------------------------------------------------------------------------
 
 resource "google_cloud_scheduler_job" "check_usage" {
-  name      = "check-vertex-usage"
+  name      = "${var.resource_prefix}-check-vertex-usage"
   schedule  = "*/5 * * * *"
   time_zone = "America/Los_Angeles"
   project   = var.project_id
@@ -246,7 +249,9 @@ resource "google_cloud_scheduler_job" "check_usage" {
 
 resource "google_billing_budget" "vertex_ai" {
   billing_account = var.billing_account_id
-  display_name    = var.budget_display_name
+  display_name    = local.budget_display_name
+
+  depends_on = [google_project_service.apis["billingbudgets.googleapis.com"]]
 
   budget_filter {
     projects = ["projects/${var.project_id}"]

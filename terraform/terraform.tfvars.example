@@ -11,11 +11,12 @@ billing_account_id = "XXXXXX-XXXXXX-XXXXXX"
 container_image = "gcr.io/your-gcp-project-id/budget-enforcer"
 
 # Optional — override defaults
-# consumer_sa_name    = "vertex-ai-consumer"
-# admin_sa_name       = "budget-enforcer-admin"
-# vertex_ai_region    = "us-east5"
-# cloud_run_region    = "us-central1"
+# resource_prefix       = "tf"       # Prefix for all GCP resource names
+# consumer_sa_name      = "vertex-ai-consumer"
+# admin_sa_name         = "budget-enforcer-admin"
+# vertex_ai_region      = "us-east5"
+# cloud_run_region      = "us-central1"
 # monthly_budget_amount = 100
-# budget_display_name   = "vertex-ai-monthly-budget"
+# budget_display_name   = ""         # Defaults to "{prefix}-vertex-ai-monthly-budget"
 # usage_hourly_limit    = "10.00"
 # usage_daily_limit     = "50.00"

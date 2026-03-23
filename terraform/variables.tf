@@ -20,16 +20,29 @@ variable "billing_account_id" {
 }
 
 # -----------------------------------------------------------------------------
-# Service account names
+# Naming
 # -----------------------------------------------------------------------------
+
+variable "resource_prefix" {
+  type        = string
+  default     = "tf"
+  description = <<-EOT
+    Prefix for all named GCP resources (service accounts, Pub/Sub topics,
+    Cloud Run services, etc.). Use this to distinguish Terraform-managed
+    resources from manually created ones in the same project. For example,
+    with prefix "tf", Cloud Run becomes "tf-budget-enforcer", the consumer
+    SA becomes "tf-vertex-ai-consumer", etc.
+  EOT
+}
 
 variable "consumer_sa_name" {
   type        = string
   default     = "vertex-ai-consumer"
   description = <<-EOT
-    Name for the API consumer service account. This SA is used by your
-    application (e.g. Claude Code) to call Vertex AI. When the budget is
-    exceeded, the budget-enforcer disables THIS account's keys.
+    Base name for the API consumer service account (prefixed with
+    resource_prefix). This SA is used by your application (e.g. Claude Code)
+    to call Vertex AI. When the budget is exceeded, the budget-enforcer
+    disables THIS account's keys.
   EOT
 }
 
@@ -37,10 +50,10 @@ variable "admin_sa_name" {
   type        = string
   default     = "budget-enforcer-admin"
   description = <<-EOT
-    Name for the admin service account. This SA runs the Cloud Run
-    budget-enforcer service and has permissions to disable the consumer
-    SA's keys. NEVER point SERVICE_ACCOUNT_EMAIL at this SA — doing so
-    would lock you out of the project.
+    Base name for the admin service account (prefixed with resource_prefix).
+    This SA runs the Cloud Run budget-enforcer service and has permissions
+    to disable the consumer SA's keys. NEVER point SERVICE_ACCOUNT_EMAIL
+    at this SA — doing so would lock you out of the project.
   EOT
 }
 
@@ -83,8 +96,15 @@ variable "monthly_budget_amount" {
 
 variable "budget_display_name" {
   type        = string
-  default     = "vertex-ai-monthly-budget"
-  description = "Display name for the billing budget in Cloud Console."
+  default     = ""
+  description = <<-EOT
+    Display name for the billing budget in Cloud Console. If empty,
+    defaults to "{resource_prefix}-vertex-ai-monthly-budget".
+  EOT
+}
+
+locals {
+  budget_display_name = var.budget_display_name != "" ? var.budget_display_name : "${var.resource_prefix}-vertex-ai-monthly-budget"
 }
 
 # -----------------------------------------------------------------------------
