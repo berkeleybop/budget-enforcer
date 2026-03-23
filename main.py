@@ -9,21 +9,17 @@ This service has two enforcement mechanisms:
    the budget is exceeded.
 
 2. FLUX-BASED (GET /check-usage): Triggered every 5 minutes by Cloud
-   Scheduler. Estimates spend in near-real-time by combining:
-   - Known billing cost (accurate but stale, from GCP Billing)
-   - Estimated cost of recent API calls (approximate but current, from
-     Cloud Monitoring response_count metrics)
+   Scheduler. Estimates spend in near-real-time using actual token counts
+   from Cloud Monitoring, with per-model pricing and cache awareness.
 
-   This fills the 12-24h billing lag gap. Without it, a user could burn
-   through an entire budget before enforcement kicks in.
+   The estimator queries the publisher/online_serving/token_count metric,
+   which provides per-model, per-token-type counts (input, output,
+   cache_read, cache_write). It then applies the correct price for each
+   model and token type, including cache discounts.
 
-   The flux estimator works in two modes:
-   - TOKEN mode: Uses actual token count metrics from Cloud Monitoring.
-     Available for Google models (Gemini, PaLM) but NOT for Anthropic
-     models (Claude). More accurate when available.
-   - CALL_COUNT mode: Estimates cost per API call using a configurable
-     upper-bound cost. Works for ALL models including Anthropic. Less
-     precise but always available.
+   If token data is unavailable (metric path changes, new model not yet
+   reporting), it falls back to counting API calls (response_count) and
+   applying a conservative per-call cost estimate.
 
    An ENFORCEMENT_TOLERANCE scalar (default 1.0) controls how aggressively
    the estimator triggers. Set <1.0 to enforce early (prefer interruption
@@ -34,6 +30,7 @@ Both mechanisms disable the same consumer SA keys via the IAM API.
 import base64
 import json
 import os
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
 from google.cloud import iam_admin_v1
@@ -45,38 +42,85 @@ app = Flask(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Pricing tables
+#
+# Per-model pricing in USD per 1 million tokens.
+# Source: https://cloud.google.com/vertex-ai/generative-ai/pricing
+#         https://platform.claude.com/docs/en/about-claude/pricing
+#
+# When a model is not in this table, the estimator falls back to the
+# FALLBACK_PRICING entry. Set that conservatively (use the most expensive
+# model you might encounter) so unknown models don't slip past the budget.
+# ---------------------------------------------------------------------------
+
+PRICING = {
+    # Anthropic — Claude
+    "claude-opus-4-6":       {"input": 5.00,  "output": 25.00},
+    "claude-opus-4-5":       {"input": 5.00,  "output": 25.00},
+    "claude-opus-4-1":       {"input": 15.00, "output": 75.00},
+    "claude-opus-4":         {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4-5":     {"input": 3.00,  "output": 15.00},
+    "claude-sonnet-4":       {"input": 3.00,  "output": 15.00},
+    "claude-haiku-4-5":      {"input": 1.00,  "output": 5.00},
+    "claude-haiku-3-5":      {"input": 0.80,  "output": 4.00},
+    # Google — Gemini
+    "gemini-2.0-flash":      {"input": 0.15,  "output": 0.60},
+    "gemini-2.0-flash-001":  {"input": 0.15,  "output": 0.60},
+    "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30},
+    "gemini-2.0-flash-lite-001": {"input": 0.075, "output": 0.30},
+    "gemini-2.5-flash":      {"input": 0.30,  "output": 2.50},
+    "gemini-2.5-pro":        {"input": 1.25,  "output": 10.00},
+}
+
+# Used for models not in the PRICING table. Set to the most expensive
+# model you expect to encounter so unknown models are overestimated
+# rather than underestimated.
+FALLBACK_PRICING = {"input": 15.00, "output": 75.00}
+
+# Cache pricing multipliers (relative to the model's base input price).
+# Cache reads are much cheaper than standard input. Cache writes cost
+# slightly more. Claude Code uses caching heavily, so these multipliers
+# significantly affect cost estimates.
+#
+# Source: https://platform.claude.com/docs/en/about-claude/pricing
+CACHE_MULTIPLIERS = {
+    "input":                1.0,    # standard input
+    "cache_read_input":     0.1,    # cache hits: 90% cheaper
+    "cache_write_input":    1.25,   # 5-min TTL cache write (default)
+    "cache_write_5m_input": 1.25,   # 5-min TTL cache write (explicit)
+    "cache_write_1h_input": 2.0,    # 1-hour TTL cache write
+}
+
+# Token types that should be priced at the output rate
+OUTPUT_TYPES = {"output"}
+
+
+# ---------------------------------------------------------------------------
 # Configuration (from environment variables set by Terraform)
 # ---------------------------------------------------------------------------
 
-# Core settings
 SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 
-# Flux estimator settings
-# Mode: "call_count" (works for all models) or "token" (Google models only)
-FLUX_MODE = os.environ.get("FLUX_MODE", "call_count")
-# How far back to look for unbilled API calls (hours)
+# How far back to look for API usage (hours). Should exceed the maximum
+# billing data lag (~24-48h) so there's no blind spot between when calls
+# are made and when billing catches up.
 FLUX_WINDOW_HOURS = float(os.environ.get("FLUX_WINDOW_HOURS", "48"))
-# Upper-bound cost estimate per API call, by model tier (USD)
-# Used only in call_count mode. Set conservatively — better to overestimate
-# and enforce early than to underestimate and overshoot the budget.
-COST_PER_CALL_EXPENSIVE = float(os.environ.get("COST_PER_CALL_EXPENSIVE", "0.30"))
-COST_PER_CALL_CHEAP = float(os.environ.get("COST_PER_CALL_CHEAP", "0.01"))
-# Budget threshold for the flux estimator (USD). This should match the
-# monthly_budget_amount in Terraform. The billing-based enforcement (POST /)
-# uses the budget amount from the Pub/Sub message, but the flux estimator
-# needs its own copy since it doesn't receive billing data directly.
+
+# Budget threshold for the flux estimator (USD). Should match
+# monthly_budget_amount in Terraform. The billing-based enforcement
+# (POST /) gets its budget from the Pub/Sub message directly.
 FLUX_BUDGET = float(os.environ.get("FLUX_BUDGET", "0"))
-# Scalar on the budget threshold. Controls the tradeoff between early
-# enforcement (false positives) and overspend (false negatives):
-#   0.8 = enforce at 80% of budget (conservative)
+
+# Scalar on the budget threshold:
+#   0.8 = enforce at 80% of budget (conservative, prefer early cutoff)
 #   1.0 = enforce at exactly the budget (default)
 #   1.2 = allow 20% overspend before enforcing (tolerant)
 ENFORCEMENT_TOLERANCE = float(os.environ.get("ENFORCEMENT_TOLERANCE", "1.0"))
 
-# Legacy settings (from the original /check-usage implementation)
-USAGE_HOURLY_LIMIT = float(os.environ.get("USAGE_HOURLY_LIMIT", "0"))
-USAGE_DAILY_LIMIT = float(os.environ.get("USAGE_DAILY_LIMIT", "0"))
+# Fallback: upper-bound cost per API call (USD). Used only when the token
+# count metric returns no data. Conservative default assumes Opus pricing.
+COST_PER_CALL_FALLBACK = float(os.environ.get("COST_PER_CALL_FALLBACK", "0.30"))
 
 
 # ---------------------------------------------------------------------------
@@ -129,26 +173,17 @@ def handle_budget_alert():
 def check_usage():
     """Estimate current spend and enforce if it exceeds the budget.
 
-    This endpoint bridges the 12-24h gap in GCP billing data by estimating
+    This endpoint bridges the 12-24h gap in GCP billing data by computing
     spend from Cloud Monitoring metrics. It runs every 5 minutes via Cloud
     Scheduler.
 
-    The estimation works in two modes:
+    Primary estimator: queries publisher/online_serving/token_count for
+    actual per-model, per-token-type counts. This works for both Anthropic
+    (Claude) and Google (Gemini) models and accounts for cache pricing.
 
-    TOKEN mode (FLUX_MODE="token"):
-      Queries actual input/output token counts from Cloud Monitoring.
-      Only works for Google-native models (Gemini, PaLM). Anthropic
-      models on Vertex AI do NOT populate these metrics.
-
-    CALL_COUNT mode (FLUX_MODE="call_count"):
-      Queries the response_count metric (which works for ALL models
-      including Anthropic) and multiplies by a configurable cost-per-call
-      estimate. Less precise but universally available.
-
-    The estimated spend is compared against:
-      FLUX_BUDGET * ENFORCEMENT_TOLERANCE
-
-    If exceeded, consumer SA keys are disabled immediately.
+    Fallback estimator: if the token metric returns no data, falls back to
+    counting API calls (response_count) and multiplying by a conservative
+    per-call cost estimate.
     """
     if FLUX_BUDGET <= 0:
         return json.dumps({
@@ -158,10 +193,18 @@ def check_usage():
 
     threshold = FLUX_BUDGET * ENFORCEMENT_TOLERANCE
 
-    if FLUX_MODE == "token":
-        result = _estimate_spend_from_tokens()
-    else:
-        result = _estimate_spend_from_call_count()
+    # Try token-based estimation first (precise, per-model pricing)
+    result = _estimate_spend_from_tokens()
+
+    # If token metrics returned nothing, fall back to call counting
+    if result.get("total_tokens", 0) == 0 and result.get("estimated_spend", 0) == 0:
+        fallback = _estimate_spend_from_call_count()
+        if fallback.get("total_calls", 0) > 0:
+            result = fallback
+            print(
+                f"Token metrics returned no data. "
+                f"Fell back to call_count estimator."
+            )
 
     estimated_spend = result["estimated_spend"]
     result["threshold"] = threshold
@@ -186,20 +229,21 @@ def check_usage():
     return json.dumps(result), 200, {"Content-Type": "application/json"}
 
 
-def _estimate_spend_from_call_count():
-    """Estimate spend by counting API calls and applying a per-call cost.
+def _estimate_spend_from_tokens():
+    """Estimate spend using actual token counts with per-model pricing.
 
-    This is the universal estimator — it works for all model providers
-    (Anthropic, Google, etc.) because the response_count metric is always
-    populated by Vertex AI.
+    Queries the publisher/online_serving/token_count metric from Cloud
+    Monitoring. This metric provides:
+    - resource.labels.model_user_id: the model name (e.g. "claude-opus-4-6")
+    - metric.labels.type: the token type ("input", "output",
+      "cache_read_input", "cache_write_input", etc.)
 
-    The cost-per-call values (COST_PER_CALL_EXPENSIVE, COST_PER_CALL_CHEAP)
-    should be set to upper-bound estimates. It's better to overestimate and
-    trigger enforcement slightly early than to underestimate and overshoot.
+    Each model is priced according to the PRICING table. Cache reads are
+    90% cheaper than standard input (CACHE_MULTIPLIERS). Unknown models
+    use FALLBACK_PRICING (conservative, assumes most expensive model).
 
-    We don't currently distinguish which deployment ID corresponds to which
-    model. As a conservative default, all calls are priced at the expensive
-    rate. If you know your deployment IDs, you could map them here.
+    This approach was adapted from:
+    https://github.com/microbiomedata/nmdc-metadata-suggestor-ai-tool/blob/main/scripts/vertex_usage.py
     """
     client = monitoring_v3.MetricServiceClient()
     now = datetime.now(timezone.utc)
@@ -210,10 +254,102 @@ def _estimate_spend_from_call_count():
         end_time=now,
     )
 
-    # Query response_count for successful (200) calls only.
-    # Failed calls don't incur token costs.
     query_filter = (
-        'metric.type = "aiplatform.googleapis.com/prediction/online/response_count" '
+        'metric.type = '
+        '"aiplatform.googleapis.com/publisher/online_serving/token_count"'
+    )
+
+    # Aggregate token counts by model and token type
+    # { "claude-opus-4-6": { "input": 12345, "output": 6789, ... }, ... }
+    totals = defaultdict(lambda: defaultdict(int))
+    total_tokens = 0
+
+    try:
+        results = client.list_time_series(
+            request={
+                "name": f"projects/{PROJECT_ID}",
+                "filter": query_filter,
+                "interval": interval,
+                "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+            }
+        )
+        for ts in results:
+            model = ts.resource.labels.get("model_user_id", "unknown")
+            token_type = ts.metric.labels.get("type", "unknown")
+            for point in ts.points:
+                count = point.value.int64_value
+                totals[model][token_type] += count
+                total_tokens += count
+    except Exception as e:
+        print(f"Error querying token_count metric: {e}")
+        return {
+            "mode": "token",
+            "error": str(e),
+            "total_tokens": 0,
+            "estimated_spend": 0,
+        }
+
+    # Compute cost per model, respecting cache multipliers
+    model_costs = {}
+    total_spend = 0.0
+
+    for model, token_types in totals.items():
+        prices = PRICING.get(model, FALLBACK_PRICING)
+        model_cost = 0.0
+
+        for token_type, count in token_types.items():
+            if token_type in OUTPUT_TYPES:
+                # Output tokens: flat output price
+                cost = (count / 1_000_000) * prices["output"]
+            elif token_type in CACHE_MULTIPLIERS:
+                # Input-family tokens: base input price * cache multiplier
+                multiplier = CACHE_MULTIPLIERS[token_type]
+                cost = (count / 1_000_000) * prices["input"] * multiplier
+            else:
+                # Unknown token type: price at base input rate
+                cost = (count / 1_000_000) * prices["input"]
+
+            model_cost += cost
+
+        model_costs[model] = {
+            "tokens": dict(token_types),
+            "cost": round(model_cost, 4),
+            "pricing_source": "known" if model in PRICING else "fallback",
+        }
+        total_spend += model_cost
+
+    return {
+        "mode": "token",
+        "window_hours": FLUX_WINDOW_HOURS,
+        "total_tokens": total_tokens,
+        "models": model_costs,
+        "estimated_spend": round(total_spend, 2),
+    }
+
+
+def _estimate_spend_from_call_count():
+    """Fallback: estimate spend by counting API calls.
+
+    Used only when the token_count metric returns no data. Counts
+    successful API calls (response_count with status 200) and multiplies
+    by COST_PER_CALL_FALLBACK — a conservative upper-bound that assumes
+    every call is the most expensive model.
+
+    This is less precise than token-based estimation but works even if
+    the token metric path changes or a new model doesn't report tokens.
+    """
+    client = monitoring_v3.MetricServiceClient()
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=FLUX_WINDOW_HOURS)
+
+    interval = monitoring_v3.TimeInterval(
+        start_time=window_start,
+        end_time=now,
+    )
+
+    query_filter = (
+        'metric.type = '
+        '"aiplatform.googleapis.com/prediction/online/response_count" '
         'AND metric.labels.response_code = "200"'
     )
 
@@ -231,87 +367,20 @@ def _estimate_spend_from_call_count():
             for point in ts.points:
                 total_calls += point.value.int64_value
     except Exception as e:
-        print(f"Error querying Cloud Monitoring: {e}")
+        print(f"Error querying response_count metric: {e}")
         return {
-            "mode": "call_count",
+            "mode": "call_count_fallback",
             "error": str(e),
             "estimated_spend": 0,
         }
 
-    # Conservative: price all calls at the expensive rate.
-    # This overestimates if some calls are Haiku, but that's the safe
-    # direction — we'd rather enforce early than late.
-    estimated_spend = total_calls * COST_PER_CALL_EXPENSIVE
+    estimated_spend = total_calls * COST_PER_CALL_FALLBACK
 
     return {
-        "mode": "call_count",
+        "mode": "call_count_fallback",
         "window_hours": FLUX_WINDOW_HOURS,
         "total_calls": total_calls,
-        "cost_per_call": COST_PER_CALL_EXPENSIVE,
-        "estimated_spend": round(estimated_spend, 2),
-    }
-
-
-def _estimate_spend_from_tokens():
-    """Estimate spend using actual token count metrics.
-
-    This is the precise estimator — it uses input/output token counts
-    reported by Cloud Monitoring. However, it ONLY works for Google-native
-    models (Gemini, PaLM). Anthropic models on Vertex AI do not populate
-    these metrics, so this will return zero for Claude.
-
-    If you're using only Anthropic models, set FLUX_MODE="call_count".
-    If you're using a mix, you may need to run both estimators (future work).
-    """
-    client = monitoring_v3.MetricServiceClient()
-    now = datetime.now(timezone.utc)
-    window_start = now - timedelta(hours=FLUX_WINDOW_HOURS)
-
-    interval = monitoring_v3.TimeInterval(
-        start_time=window_start,
-        end_time=now,
-    )
-
-    input_tokens = 0
-    output_tokens = 0
-
-    for metric_type, counter in [
-        ("aiplatform.googleapis.com/prediction/online/input_token_count", "input"),
-        ("aiplatform.googleapis.com/prediction/online/output_token_count", "output"),
-    ]:
-        query_filter = f'metric.type = "{metric_type}"'
-        try:
-            results = client.list_time_series(
-                request={
-                    "name": f"projects/{PROJECT_ID}",
-                    "filter": query_filter,
-                    "interval": interval,
-                    "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
-                }
-            )
-            for ts in results:
-                for point in ts.points:
-                    if counter == "input":
-                        input_tokens += point.value.int64_value
-                    else:
-                        output_tokens += point.value.int64_value
-        except Exception as e:
-            print(f"Error querying {metric_type}: {e}")
-
-    # Default pricing (Gemini 1.5 Pro as reference; adjust as needed)
-    input_price_per_mtk = float(os.environ.get("TOKEN_INPUT_PRICE_PER_MTK", "3.50"))
-    output_price_per_mtk = float(os.environ.get("TOKEN_OUTPUT_PRICE_PER_MTK", "10.50"))
-
-    estimated_spend = (
-        (input_tokens / 1_000_000) * input_price_per_mtk
-        + (output_tokens / 1_000_000) * output_price_per_mtk
-    )
-
-    return {
-        "mode": "token",
-        "window_hours": FLUX_WINDOW_HOURS,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
+        "cost_per_call": COST_PER_CALL_FALLBACK,
         "estimated_spend": round(estimated_spend, 2),
     }
 
@@ -322,18 +391,15 @@ def _estimate_spend_from_tokens():
 
 @app.route("/status", methods=["GET"])
 def status():
-    """Return current configuration for debugging and verification."""
+    """Return current configuration and pricing table for debugging."""
     return json.dumps({
         "service_account_email": SERVICE_ACCOUNT_EMAIL,
         "project_id": PROJECT_ID,
-        "flux_mode": FLUX_MODE,
         "flux_budget": FLUX_BUDGET,
         "enforcement_tolerance": ENFORCEMENT_TOLERANCE,
         "flux_window_hours": FLUX_WINDOW_HOURS,
-        "cost_per_call_expensive": COST_PER_CALL_EXPENSIVE,
-        "cost_per_call_cheap": COST_PER_CALL_CHEAP,
-        "usage_hourly_limit": USAGE_HOURLY_LIMIT,
-        "usage_daily_limit": USAGE_DAILY_LIMIT,
+        "cost_per_call_fallback": COST_PER_CALL_FALLBACK,
+        "known_models": list(PRICING.keys()),
     }), 200, {"Content-Type": "application/json"}
 
 

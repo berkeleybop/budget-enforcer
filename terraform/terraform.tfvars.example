@@ -20,8 +20,8 @@ container_image = "gcr.io/your-gcp-project-id/budget-enforcer"
 # budget_display_name   = ""         # Defaults to "{prefix}-vertex-ai-monthly-budget"
 
 # Flux estimator — real-time spend estimation (bridges 12-24h billing lag)
-# flux_mode               = "call_count"  # "call_count" for Anthropic, "token" for Google models
-# flux_window_hours       = 48            # Hours of call data to estimate from
-# cost_per_call_expensive = "0.30"        # USD per Opus-class call (upper bound)
-# cost_per_call_cheap     = "0.01"        # USD per Haiku-class call (upper bound)
-# enforcement_tolerance   = "1.0"         # 0.8=early cutoff, 1.0=exact, 1.2=tolerant
+# Uses actual token counts per model with cache-aware pricing.
+# Pricing table is in main.py — update there when model prices change.
+# flux_window_hours       = 48      # Hours of usage data to estimate from
+# enforcement_tolerance   = "1.0"   # 0.8=early cutoff, 1.0=exact, 1.2=tolerant
+# cost_per_call_fallback  = "0.30"  # Fallback if token metrics unavailable

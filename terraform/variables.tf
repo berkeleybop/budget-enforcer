@@ -111,74 +111,28 @@ locals {
 # Flux estimator — real-time spend estimation
 #
 # GCP billing data lags 12-24 hours. The flux estimator bridges this gap
-# by estimating spend from Cloud Monitoring metrics. It runs every 5 min
-# via Cloud Scheduler hitting the /check-usage endpoint.
+# by querying Cloud Monitoring for actual token counts every 5 minutes.
+# It uses the publisher/online_serving/token_count metric, which works
+# for BOTH Anthropic (Claude) and Google (Gemini) models and provides
+# per-model, per-token-type breakdowns including cache pricing.
 #
-# Two modes are available:
-#   "call_count" — counts API calls and multiplies by a per-call cost
-#     estimate. Works for ALL models including Anthropic (Claude).
-#   "token" — uses actual token count metrics from Cloud Monitoring.
-#     Only works for Google-native models (Gemini, PaLM). Anthropic
-#     models do NOT populate token count metrics.
+# If the token metric returns no data (e.g. new model not yet reporting),
+# it falls back to counting API calls and applying a conservative
+# per-call cost estimate.
 #
-# If you use only Anthropic models, use "call_count" (the default).
-# If you use only Google models, use "token" for better accuracy.
-# If you use a mix, use "call_count" as the safe fallback.
+# Pricing is built into main.py (the PRICING dict). When model prices
+# change, update main.py, rebuild the container, and terraform apply.
 # -----------------------------------------------------------------------------
-
-variable "flux_mode" {
-  type        = string
-  default     = "call_count"
-  description = <<-EOT
-    Spend estimation mode for the /check-usage endpoint:
-    - "call_count": Counts API calls, applies per-call cost estimate.
-      Works for ALL models (Anthropic, Google, etc.). Less precise but
-      universally available. Use this for Claude.
-    - "token": Uses actual token counts from Cloud Monitoring. More
-      precise but ONLY works for Google-native models (Gemini, PaLM).
-      Anthropic models do not populate these metrics.
-  EOT
-
-  validation {
-    condition     = contains(["call_count", "token"], var.flux_mode)
-    error_message = "flux_mode must be \"call_count\" or \"token\"."
-  }
-}
 
 variable "flux_window_hours" {
   type        = number
   default     = 48
   description = <<-EOT
-    How many hours of recent API call data to include in the spend
-    estimate. The window should be longer than the maximum billing data
-    lag (~24-48h) to avoid a blind spot between when calls are made and
-    when billing catches up. As billing data arrives and the billing-based
-    enforcement (POST /) takes over, the overlapping call data ages out
-    of this window naturally — preventing double-counting.
-  EOT
-}
-
-variable "cost_per_call_expensive" {
-  type        = string
-  default     = "0.30"
-  description = <<-EOT
-    Upper-bound cost estimate (USD) per API call for expensive models
-    (e.g. Claude Opus). Used in call_count mode. Set this conservatively
-    — it's better to overestimate and enforce slightly early than to
-    underestimate and overshoot the budget. A typical Opus call with
-    ~5K input + ~1K output tokens costs roughly $0.15-0.30.
-  EOT
-}
-
-variable "cost_per_call_cheap" {
-  type        = string
-  default     = "0.01"
-  description = <<-EOT
-    Upper-bound cost estimate (USD) per API call for cheap models
-    (e.g. Claude Haiku). Used in call_count mode. Currently all calls
-    are priced at the expensive rate as a conservative default, since
-    we cannot reliably distinguish model deployments. This variable is
-    available for future use when deployment-to-model mapping is added.
+    How many hours of recent API usage to include in the spend estimate.
+    Should exceed the maximum billing data lag (~24-48h) so there's no
+    blind spot. As billing data arrives and the billing-based enforcement
+    (POST /) takes over, the overlapping usage ages out of this window
+    naturally — preventing double-counting.
   EOT
 }
 
@@ -187,9 +141,9 @@ variable "enforcement_tolerance" {
   default     = "1.0"
   description = <<-EOT
     Scalar on the budget threshold that controls how aggressively the
-    flux estimator enforces. This tunes the tradeoff between false
-    positives (keys disabled before real spend hits the budget) and
-    overspend (letting calls through while billing catches up).
+    flux estimator enforces. Tunes the tradeoff between false positives
+    (keys disabled before real spend hits the budget) and overspend
+    (letting calls through while billing catches up).
 
     Examples:
       0.8 = enforce at 80% of budget (conservative, prefer early cutoff)
@@ -201,18 +155,16 @@ variable "enforcement_tolerance" {
   EOT
 }
 
-# Legacy settings (kept for backward compatibility)
-
-variable "usage_hourly_limit" {
+variable "cost_per_call_fallback" {
   type        = string
-  default     = "0"
-  description = "Legacy: max cost in a 1-hour window. Superseded by flux estimator."
-}
-
-variable "usage_daily_limit" {
-  type        = string
-  default     = "0"
-  description = "Legacy: max cost in a 24-hour window. Superseded by flux estimator."
+  default     = "0.30"
+  description = <<-EOT
+    Fallback: upper-bound cost per API call (USD). Used ONLY when the
+    token count metric returns no data. Assumes every call costs as much
+    as the most expensive model (~$0.30 for Opus). In normal operation
+    the token-based estimator is used instead, which has per-model
+    pricing and cache awareness.
+  EOT
 }
 
 # -----------------------------------------------------------------------------

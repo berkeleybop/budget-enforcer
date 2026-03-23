@@ -168,11 +168,9 @@ resource "google_cloud_run_v2_service" "budget_enforcer" {
         value = var.project_id
       }
       # Flux estimator: real-time spend estimation to bridge the
-      # 12-24h billing data lag. See variables.tf for full docs.
-      env {
-        name  = "FLUX_MODE"
-        value = var.flux_mode
-      }
+      # 12-24h billing data lag. Queries Cloud Monitoring for actual
+      # token counts per model, applies per-model pricing with cache
+      # awareness. See variables.tf for full docs.
       env {
         # Must match monthly_budget_amount so the flux estimator knows
         # the threshold. The billing-based enforcement (POST /) gets its
@@ -185,25 +183,12 @@ resource "google_cloud_run_v2_service" "budget_enforcer" {
         value = tostring(var.flux_window_hours)
       }
       env {
-        name  = "COST_PER_CALL_EXPENSIVE"
-        value = var.cost_per_call_expensive
-      }
-      env {
-        name  = "COST_PER_CALL_CHEAP"
-        value = var.cost_per_call_cheap
-      }
-      env {
         name  = "ENFORCEMENT_TOLERANCE"
         value = var.enforcement_tolerance
       }
-      # Legacy settings
       env {
-        name  = "USAGE_HOURLY_LIMIT"
-        value = var.usage_hourly_limit
-      }
-      env {
-        name  = "USAGE_DAILY_LIMIT"
-        value = var.usage_daily_limit
+        name  = "COST_PER_CALL_FALLBACK"
+        value = var.cost_per_call_fallback
       }
     }
   }
