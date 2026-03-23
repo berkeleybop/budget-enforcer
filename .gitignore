@@ -4,7 +4,8 @@
 *.tfstate.*
 *.tfvars
 !terraform.tfvars.example
-.terraform.lock.hcl
+# Note: .terraform.lock.hcl is intentionally NOT ignored — it should be
+# committed so all developers use the same provider versions.
 
 # GCP credentials — never commit these
 *.json

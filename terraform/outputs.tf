@@ -66,6 +66,24 @@ output "list_keys_command" {
   description = "Command to list consumer SA keys and check disabled status."
 }
 
+output "check_usage_command" {
+  value       = <<-EOT
+    START_TIME=$(date -u -d '1 hour ago' +%%Y-%%m-%%dT%%H:%%M:%%SZ) && \
+    END_TIME=$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ) && \
+    curl -s \
+      -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+      "https://monitoring.googleapis.com/v3/projects/${var.project_id}/timeSeries?filter=metric.type%%3D%%22aiplatform.googleapis.com%%2Fprediction%%2Fonline%%2Fresponse_count%%22&interval.startTime=$${START_TIME}&interval.endTime=$${END_TIME}"
+  EOT
+  description = <<-EOT
+    Command to check real-time Vertex AI API call volume via Cloud
+    Monitoring. Uses the REST API directly because "gcloud monitoring
+    time-series" is not available in all gcloud versions. Returns JSON
+    with per-minute response counts grouped by response code. Also
+    viewable in Cloud Console: Monitoring > Metrics Explorer, metric
+    "aiplatform.googleapis.com/prediction/online/response_count".
+  EOT
+}
+
 output "claude_code_env_snippet" {
   value = <<-EOT
     # Claude Code configuration for Vertex AI
