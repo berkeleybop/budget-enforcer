@@ -18,5 +18,10 @@ container_image = "gcr.io/your-gcp-project-id/budget-enforcer"
 # cloud_run_region      = "us-central1"
 # monthly_budget_amount = 100
 # budget_display_name   = ""         # Defaults to "{prefix}-vertex-ai-monthly-budget"
-# usage_hourly_limit    = "10.00"
-# usage_daily_limit     = "50.00"
+
+# Flux estimator — real-time spend estimation (bridges 12-24h billing lag)
+# flux_mode               = "call_count"  # "call_count" for Anthropic, "token" for Google models
+# flux_window_hours       = 48            # Hours of call data to estimate from
+# cost_per_call_expensive = "0.30"        # USD per Opus-class call (upper bound)
+# cost_per_call_cheap     = "0.01"        # USD per Haiku-class call (upper bound)
+# enforcement_tolerance   = "1.0"         # 0.8=early cutoff, 1.0=exact, 1.2=tolerant

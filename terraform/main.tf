@@ -167,6 +167,36 @@ resource "google_cloud_run_v2_service" "budget_enforcer" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
+      # Flux estimator: real-time spend estimation to bridge the
+      # 12-24h billing data lag. See variables.tf for full docs.
+      env {
+        name  = "FLUX_MODE"
+        value = var.flux_mode
+      }
+      env {
+        # Must match monthly_budget_amount so the flux estimator knows
+        # the threshold. The billing-based enforcement (POST /) gets its
+        # budget from the Pub/Sub message, but /check-usage needs its own.
+        name  = "FLUX_BUDGET"
+        value = tostring(var.monthly_budget_amount)
+      }
+      env {
+        name  = "FLUX_WINDOW_HOURS"
+        value = tostring(var.flux_window_hours)
+      }
+      env {
+        name  = "COST_PER_CALL_EXPENSIVE"
+        value = var.cost_per_call_expensive
+      }
+      env {
+        name  = "COST_PER_CALL_CHEAP"
+        value = var.cost_per_call_cheap
+      }
+      env {
+        name  = "ENFORCEMENT_TOLERANCE"
+        value = var.enforcement_tolerance
+      }
+      # Legacy settings
       env {
         name  = "USAGE_HOURLY_LIMIT"
         value = var.usage_hourly_limit

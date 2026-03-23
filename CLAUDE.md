@@ -116,9 +116,13 @@ and Vertex AI access stops immediately. Related real-time limits:
 These are faster than GCP Billing (which can lag 12-24 hours).
 All three are defined in `terraform/variables.tf` with full descriptions.
 
-## How the enforcement chain works
+## Two enforcement mechanisms
 
-Understanding the flow helps when debugging:
+The budget enforcer has two independent enforcement paths. Both
+disable the same consumer SA keys, but they operate on different
+timescales and data sources.
+
+### 1. Billing-based (POST /) — accurate but slow
 
 1. GCP Billing evaluates spend against budget thresholds periodically
 2. At 100% threshold, Billing publishes a JSON message to the Pub/Sub topic
@@ -127,13 +131,44 @@ Understanding the flow helps when debugging:
 5. Cloud Run validates the OIDC token (this is where 403s happen if
    the invoker SA lacks `roles/run.invoker`)
 6. `main.py` decodes the message and compares `costAmount >= budgetAmount`
-7. If exceeded, it lists ALL keys on the consumer SA and disables
-   every USER_MANAGED key (Google-managed keys are skipped)
-8. Applications using those keys immediately lose Vertex AI access
+7. If exceeded, keys are disabled
+
+**Lag: 12-24 hours** (GCP billing data delay). This is the ground truth
+but it means a user could burn $50+ past a $5 budget before it fires.
+
+### 2. Flux-based (GET /check-usage) — approximate but fast
+
+1. Cloud Scheduler hits `/check-usage` every 5 minutes
+2. The endpoint queries Cloud Monitoring for recent API call volume
+3. It estimates spend: `total_calls * cost_per_call_estimate`
+4. It compares against: `FLUX_BUDGET * ENFORCEMENT_TOLERANCE`
+5. If exceeded, keys are disabled
+
+**Lag: 3-5 minutes** (Cloud Monitoring data delay).
+
+The flux estimator has two modes:
+- **`call_count`** (default): Counts API calls from the `response_count`
+  metric and multiplies by a per-call cost estimate. Works for ALL
+  models including Anthropic (Claude). Less precise but universal.
+- **`token`**: Uses actual token count metrics. More precise but ONLY
+  works for Google-native models (Gemini, PaLM). Anthropic models
+  do NOT populate these metrics on Vertex AI.
+
+### Enforcement tolerance
+
+The `ENFORCEMENT_TOLERANCE` scalar controls how aggressively the flux
+estimator triggers:
+- `0.8` = enforce at 80% of budget (conservative, prefer interruption)
+- `1.0` = enforce at exactly the budget (default)
+- `1.2` = allow 20% overspend (tolerant, fewer false positives)
+
+This only affects the flux estimator. The billing-based path always
+enforces at exactly 100%.
 
 **Where things break (in order of likelihood):**
 - Invoker SA lost `roles/run.invoker` binding (after Cloud Run redeploy)
 - Pub/Sub subscription missing OIDC auth config
+- `FLUX_BUDGET` set to 0 or not matching `monthly_budget_amount`
 - Budget scoped to wrong services (missing Claude marketplace charges)
 - `SERVICE_ACCOUNT_EMAIL` pointing at admin SA instead of consumer SA
 
@@ -169,12 +204,15 @@ Replace `TOPIC_NAME`, `SERVICE_NAME`, etc. with values from
 
 - **Add a new GCP API**: Add to `local.required_apis` in `terraform/main.tf`
 - **Change budget threshold**: Update `monthly_budget_amount` in `terraform.tfvars`
-- **Change usage limits**: Update `usage_hourly_limit` / `usage_daily_limit` in `terraform.tfvars`
+- **Tune enforcement aggressiveness**: Update `enforcement_tolerance` in `terraform.tfvars`
+- **Switch to Google models**: Set `flux_mode = "token"` in `terraform.tfvars`
+- **Adjust cost-per-call estimate**: Update `cost_per_call_expensive` in `terraform.tfvars`
 - **Change resource prefix**: Update `resource_prefix` in `terraform.tfvars`
-- **Update the Flask app**: Edit `main.py`, rebuild container, update `container_image`
+- **Update the Flask app**: Edit `main.py`, rebuild container, `terraform apply`
 - **Recovery after key disable**: See `docs/SOP.md` recovery section (R1-R4)
 - **Get all operational values**: `terraform output`
 - **Get Claude Code config**: `terraform output claude_code_env_snippet`
+- **Check flux estimator status**: `curl -s CLOUD_RUN_URL/status | python3 -m json.tool`
 
 ## Style and conventions
 
