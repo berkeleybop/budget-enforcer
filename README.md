@@ -19,18 +19,91 @@ cd terraform/
 terraform apply
 ```
 
-See `terraform/variables.tf` for related settings including real-time
-usage limits (`usage_hourly_limit`, `usage_daily_limit`) that can catch
-runaway spend faster than GCP Billing notifications (which lag 12-24h).
+A flux estimator checks spend every 5 minutes using API call counts,
+catching runaway spend much faster than GCP Billing (which lags
+12-24 hours). See "How it works" below for details.
 
 ## How it works
 
-1. GCP Billing detects spend has crossed the budget threshold
-2. Billing sends a notification to a Pub/Sub topic
-3. Pub/Sub pushes the message to a Cloud Run service (this repo)
-4. The service disables the consumer service account's JSON keys via IAM API
-5. Applications using those keys (e.g. Claude Code) can no longer make API calls
-6. An admin re-enables the keys once the budget situation is addressed
+This service runs on Cloud Run and has **two independent ways** to
+detect overspend. Both do the same thing when triggered: disable the
+consumer service account's JSON keys so applications can no longer
+call Vertex AI.
+
+### Why two mechanisms?
+
+GCP only tells you what you've spent **12-24 hours after the fact**.
+If your budget is $5 and you're burning $30/hour on Claude Opus, you
+could spend $360-720 before GCP even notices. So we have:
+
+1. **The billing path** — waits for GCP's official spend numbers (accurate
+   but slow)
+2. **The flux estimator** — counts your API calls in real time and
+   *estimates* what they probably cost (fast but approximate)
+
+Think of it like a gas gauge: the billing path is like checking your
+credit card statement (accurate, delayed), while the flux estimator is
+like watching the pump's dollar counter tick up (real-time, estimated).
+
+### The billing path (accurate, 12-24h delay)
+
+```
+GCP Billing ──► Pub/Sub topic ──► This Cloud Run service ──► Disables keys
+  "You spent $5"                    (POST /)
+```
+
+This is the original mechanism. GCP Billing periodically checks actual
+spend against your budget. When it crosses 100%, it sends a message
+through Pub/Sub to this service. Reliable, but the 12-24h lag means
+overspend can be significant.
+
+### The flux estimator (approximate, ~5 min delay)
+
+```
+Cloud Scheduler ──► This Cloud Run service ──► Cloud Monitoring
+  (every 5 min)      (GET /check-usage)          "How many API calls
+                                                   in the last 48h?"
+                           │
+                           ▼
+                     estimated_spend = call_count × cost_per_call
+                           │
+                     if estimated_spend >= budget × tolerance:
+                           │
+                           ▼
+                     Disable keys
+```
+
+Every 5 minutes, Cloud Scheduler pokes the `/check-usage` endpoint.
+That endpoint asks Cloud Monitoring: "how many Vertex AI API calls
+happened in the last 48 hours?" It then multiplies that count by a
+conservative cost-per-call estimate to get an approximate dollar amount.
+
+**We are NOT guessing which model was used.** We don't know (and don't
+try to figure out) whether a given API call was Opus or Haiku. Instead,
+we assume the worst case: every call costs as much as the most expensive
+model (Opus, ~$0.30/call). This means the estimate will always be **at
+or above** actual spend — it might trigger enforcement a little early,
+but it won't let a budget blow past silently.
+
+### Configuration
+
+There's only one budget number to set: `monthly_budget_amount` in your
+`terraform.tfvars`. Terraform automatically passes this to both
+enforcement paths.
+
+The flux estimator has a few extra knobs (all optional, defaults work):
+
+| Setting | What it does | Default |
+|---|---|---|
+| `cost_per_call_expensive` | How much to assume each API call costs (worst case) | $0.30 |
+| `enforcement_tolerance` | How strict to be (0.8 = cut off early, 1.2 = allow some overshoot) | 1.0 |
+| `flux_mode` | "call_count" for Claude/Anthropic, "token" for Gemini/Google models | call_count |
+
+If you use Google models (Gemini), set `flux_mode = "token"` — Cloud
+Monitoring provides actual token counts for those models, so the
+estimate becomes precise rather than approximate. For Claude/Anthropic
+models, token counts are not available, so we fall back to counting
+calls.
 
 ## Architecture
 
