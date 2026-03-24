@@ -25,3 +25,6 @@ container_image = "gcr.io/your-gcp-project-id/budget-enforcer"
 # flux_window_hours       = 48      # Hours of usage data to estimate from
 # enforcement_tolerance   = "1.0"   # 0.8=early cutoff, 1.0=exact, 1.2=tolerant
 # cost_per_call_fallback  = "0.30"  # Fallback if token metrics unavailable
+
+# Optional: Slack notification when keys are disabled
+# slack_webhook_url = "https://hooks.slack.com/services/T.../B.../xxx"

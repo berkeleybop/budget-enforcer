@@ -190,6 +190,12 @@ resource "google_cloud_run_v2_service" "budget_enforcer" {
         name  = "COST_PER_CALL_FALLBACK"
         value = var.cost_per_call_fallback
       }
+      # Optional: Slack notification when keys are disabled.
+      # Leave slack_webhook_url empty in tfvars to disable.
+      env {
+        name  = "SLACK_WEBHOOK_URL"
+        value = var.slack_webhook_url
+      }
     }
   }
 

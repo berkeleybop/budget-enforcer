@@ -155,6 +155,22 @@ variable "enforcement_tolerance" {
   EOT
 }
 
+variable "slack_webhook_url" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = <<-EOT
+    Optional Slack incoming webhook URL. When set, the enforcer posts a
+    notification to this webhook every time keys are disabled. Leave
+    empty to disable Slack notifications.
+
+    To set up: Slack > Apps > Incoming Webhooks > Add to a channel.
+    The URL looks like: https://hooks.slack.com/services/T.../B.../xxx
+
+    This is marked sensitive so Terraform won't display it in plan output.
+  EOT
+}
+
 variable "cost_per_call_fallback" {
   type        = string
   default     = "0.30"

@@ -30,6 +30,8 @@ Both mechanisms disable the same consumer SA keys via the IAM API.
 import base64
 import json
 import os
+import urllib.request
+import urllib.error
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -134,6 +136,12 @@ ENFORCEMENT_TOLERANCE = float(os.environ.get("ENFORCEMENT_TOLERANCE", "1.0"))
 # count metric returns no data. Conservative default assumes Opus pricing.
 COST_PER_CALL_FALLBACK = float(os.environ.get("COST_PER_CALL_FALLBACK", "0.30"))
 
+# Optional Slack webhook for enforcement notifications. When set, the
+# enforcer posts a message to this webhook URL every time keys are
+# disabled. Leave empty to disable Slack notifications.
+# To set up: Slack > your workspace > Apps > Incoming Webhooks > Add.
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+
 
 # ---------------------------------------------------------------------------
 # POST / — Billing-based enforcement (Pub/Sub from GCP Billing Budget)
@@ -167,7 +175,9 @@ def handle_budget_alert():
         budget_amount = budget_notification.get("budgetAmount", 0)
 
         if cost_amount >= budget_amount:
-            disable_service_account_keys()
+            disable_service_account_keys(
+                reason=f"GCP billing: ${cost_amount} >= ${budget_amount} budget"
+            )
             return (
                 f"Budget exceeded (${cost_amount} >= ${budget_amount}). "
                 f"Service account keys disabled.",
@@ -224,7 +234,13 @@ def check_usage():
     result["enforcement_tolerance"] = ENFORCEMENT_TOLERANCE
 
     if estimated_spend >= threshold:
-        disable_service_account_keys()
+        disable_service_account_keys(
+            reason=(
+                f"Flux estimate: ${estimated_spend:.2f} >= "
+                f"${threshold:.2f} threshold "
+                f"(${FLUX_BUDGET:.2f} budget x {ENFORCEMENT_TOLERANCE} tolerance)"
+            )
+        )
         result["action"] = "keys_disabled"
         print(
             f"Flux estimate ${estimated_spend:.2f} >= threshold "
@@ -415,6 +431,7 @@ def status():
         "flux_window_hours": FLUX_WINDOW_HOURS,
         "cost_per_call_fallback": COST_PER_CALL_FALLBACK,
         "regional_premium": REGIONAL_PREMIUM,
+        "slack_configured": bool(SLACK_WEBHOOK_URL),
         "known_models": list(PRICING.keys()),
     }), 200, {"Content-Type": "application/json"}
 
@@ -423,13 +440,16 @@ def status():
 # Shared: disable consumer SA keys
 # ---------------------------------------------------------------------------
 
-def disable_service_account_keys():
+def disable_service_account_keys(reason=""):
     """Disable all user-managed keys for the configured service account.
 
     Only disables USER_MANAGED keys (the JSON key files distributed to
     developers). Google-managed system keys are left alone — they're
     internal to GCP and disabling them would break the service account
     itself.
+
+    After disabling keys, sends a Slack notification if SLACK_WEBHOOK_URL
+    is configured.
     """
     client = iam_admin_v1.IAMClient()
 
@@ -439,13 +459,57 @@ def disable_service_account_keys():
 
     keys = client.list_service_account_keys(request=list_request)
 
+    disabled_keys = []
     for key in keys.keys:
         if key.key_type == iam_admin_v1.ListServiceAccountKeysRequest.KeyType.USER_MANAGED:
             disable_request = iam_admin_v1.DisableServiceAccountKeyRequest(
                 name=key.name
             )
             client.disable_service_account_key(request=disable_request)
+            disabled_keys.append(key.name)
             print(f"Disabled key: {key.name}")
+
+    if disabled_keys:
+        _notify_slack(reason, disabled_keys)
+
+
+def _notify_slack(reason, disabled_keys):
+    """Post a notification to Slack when keys are disabled.
+
+    Does nothing if SLACK_WEBHOOK_URL is not set. Failures are logged
+    but do not prevent key disabling — enforcement takes priority over
+    notifications.
+    """
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    key_count = len(disabled_keys)
+    message = {
+        "text": (
+            f":rotating_light: *Budget Enforcer triggered* — "
+            f"{key_count} key(s) disabled\n"
+            f"*Project:* `{PROJECT_ID}`\n"
+            f"*Consumer SA:* `{SERVICE_ACCOUNT_EMAIL}`\n"
+            f"*Reason:* {reason}\n"
+            f"*Recovery:* Re-enable keys and adjust budget. "
+            f"See `docs/SOP.md` recovery section (R1-R4)."
+        ),
+    }
+
+    data = json.dumps(message).encode("utf-8")
+    req = urllib.request.Request(
+        SLACK_WEBHOOK_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"Slack notification sent (status {resp.status})")
+    except (urllib.error.URLError, OSError) as e:
+        # Log but don't fail — enforcement is more important than notification
+        print(f"Slack notification failed: {e}")
 
 
 if __name__ == "__main__":
