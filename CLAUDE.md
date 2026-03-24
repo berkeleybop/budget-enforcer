@@ -214,6 +214,28 @@ Replace `TOPIC_NAME`, `SERVICE_NAME`, etc. with values from
 - **Get Claude Code config**: `terraform output claude_code_env_snippet`
 - **Check flux estimator status**: `curl -s CLOUD_RUN_URL/status | python3 -m json.tool`
 
+## Pricing table maintenance
+
+The `PRICING` dict in `main.py` contains per-model token costs used by
+the flux estimator. **Check and update this periodically** — model prices
+change when new versions are released or old models are deprecated.
+
+Sources:
+- Anthropic: https://docs.anthropic.com/en/docs/about-claude/models
+- Google: https://cloud.google.com/vertex-ai/generative-ai/pricing
+
+Things to check:
+- New model versions added (e.g. a new Opus or Gemini release)
+- Price changes on existing models
+- Deprecated models removed from availability
+- `REGIONAL_PREMIUM` (default 1.10 for us-east5) — verify the 10%
+  regional surcharge still applies for your endpoint region
+- `CACHE_MULTIPLIERS` — verify cache pricing hasn't changed
+- `FALLBACK_PRICING` — should match the most expensive model you
+  might encounter, so unknown models overestimate rather than under
+
+When updating: edit `main.py`, rebuild the container, `terraform apply`.
+
 ## Style and conventions
 
 - Terraform files use the standard HashiCorp style (`terraform fmt`)

@@ -83,6 +83,12 @@ PRICING = {
 # rather than underestimated.
 FALLBACK_PRICING = {"input": 15.00, "output": 75.00}
 
+# Vertex AI regional endpoints (e.g. us-east5) may charge a 10% premium
+# over global endpoint pricing. The PRICING table above uses base (global)
+# prices. This multiplier is applied to all cost calculations to account
+# for the regional premium. Set to 1.0 if using the global endpoint.
+REGIONAL_PREMIUM = float(os.environ.get("REGIONAL_PREMIUM", "1.10"))
+
 # Cache pricing multipliers (relative to the model's base input price).
 # Cache reads are much cheaper than standard input. Cache writes cost
 # slightly more. Claude Code uses caching heavily, so these multipliers
@@ -317,6 +323,9 @@ def _estimate_spend_from_tokens():
 
             model_cost += cost
 
+        # Apply regional endpoint premium (e.g. 10% for us-east5)
+        model_cost *= REGIONAL_PREMIUM
+
         model_costs[model] = {
             "tokens": dict(token_types),
             "cost": round(model_cost, 4),
@@ -380,7 +389,7 @@ def _estimate_spend_from_call_count():
             "estimated_spend": 0,
         }
 
-    estimated_spend = total_calls * COST_PER_CALL_FALLBACK
+    estimated_spend = total_calls * COST_PER_CALL_FALLBACK * REGIONAL_PREMIUM
 
     return {
         "mode": "call_count_fallback",
@@ -405,6 +414,7 @@ def status():
         "enforcement_tolerance": ENFORCEMENT_TOLERANCE,
         "flux_window_hours": FLUX_WINDOW_HOURS,
         "cost_per_call_fallback": COST_PER_CALL_FALLBACK,
+        "regional_premium": REGIONAL_PREMIUM,
         "known_models": list(PRICING.keys()),
     }), 200, {"Content-Type": "application/json"}
 

@@ -99,11 +99,11 @@ The flux estimator has a few extra knobs (all optional, defaults work):
 | `enforcement_tolerance` | How strict to be (0.8 = cut off early, 1.2 = allow some overshoot) | 1.0 |
 | `flux_mode` | "call_count" for Claude/Anthropic, "token" for Gemini/Google models | call_count |
 
-If you use Google models (Gemini), set `flux_mode = "token"` — Cloud
-Monitoring provides actual token counts for those models, so the
-estimate becomes precise rather than approximate. For Claude/Anthropic
-models, token counts are not available, so we fall back to counting
-calls.
+Per-model pricing (Opus vs Haiku vs Gemini, etc.) and prompt cache
+discounts are built into `main.py`. A 10% regional premium is applied
+by default for non-global endpoints like us-east5. The pricing table
+should be checked periodically when new model versions are released —
+see `CLAUDE.md` for sources and what to check.
 
 ## Architecture
 
