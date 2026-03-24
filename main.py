@@ -54,22 +54,28 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 
 PRICING = {
-    # Anthropic — Claude
+    # Anthropic — Claude (prices per 1M tokens, USD)
+    # Source: https://docs.anthropic.com/en/docs/about-claude/models
     "claude-opus-4-6":       {"input": 5.00,  "output": 25.00},
     "claude-opus-4-5":       {"input": 5.00,  "output": 25.00},
     "claude-opus-4-1":       {"input": 15.00, "output": 75.00},
     "claude-opus-4":         {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4-6":     {"input": 3.00,  "output": 15.00},
     "claude-sonnet-4-5":     {"input": 3.00,  "output": 15.00},
     "claude-sonnet-4":       {"input": 3.00,  "output": 15.00},
     "claude-haiku-4-5":      {"input": 1.00,  "output": 5.00},
     "claude-haiku-3-5":      {"input": 0.80,  "output": 4.00},
-    # Google — Gemini
-    "gemini-2.0-flash":      {"input": 0.15,  "output": 0.60},
-    "gemini-2.0-flash-001":  {"input": 0.15,  "output": 0.60},
-    "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30},
+    # Google — Gemini (prices per 1M tokens, USD)
+    # Source: https://cloud.google.com/vertex-ai/generative-ai/pricing
+    "gemini-2.0-flash":          {"input": 0.15,  "output": 0.60},
+    "gemini-2.0-flash-001":      {"input": 0.15,  "output": 0.60},
+    "gemini-2.0-flash-lite":     {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash-lite-001": {"input": 0.075, "output": 0.30},
-    "gemini-2.5-flash":      {"input": 0.30,  "output": 2.50},
-    "gemini-2.5-pro":        {"input": 1.25,  "output": 10.00},
+    "gemini-2.5-flash":          {"input": 0.30,  "output": 2.50},
+    "gemini-2.5-flash-lite":     {"input": 0.10,  "output": 0.40},
+    "gemini-2.5-pro":            {"input": 1.25,  "output": 10.00},
+    "gemini-3.0-flash":          {"input": 0.50,  "output": 3.00},
+    "gemini-3.0-pro":            {"input": 2.00,  "output": 12.00},
 }
 
 # Used for models not in the PRICING table. Set to the most expensive
