@@ -78,13 +78,6 @@ That endpoint asks Cloud Monitoring: "how many Vertex AI API calls
 happened in the last 48 hours?" It then multiplies that count by a
 conservative cost-per-call estimate to get an approximate dollar amount.
 
-**We are NOT guessing which model was used.** We don't know (and don't
-try to figure out) whether a given API call was Opus or Haiku. Instead,
-we assume the worst case: every call costs as much as the most expensive
-model (Opus, ~$0.30/call). This means the estimate will always be **at
-or above** actual spend — it might trigger enforcement a little early,
-but it won't let a budget blow past silently.
-
 ### Configuration
 
 There's only one budget number to set: `monthly_budget_amount` in your
@@ -95,15 +88,15 @@ The flux estimator has a few extra knobs (all optional, defaults work):
 
 | Setting | What it does | Default |
 |---|---|---|
-| `cost_per_call_expensive` | How much to assume each API call costs (worst case) | $0.30 |
 | `enforcement_tolerance` | How strict to be (0.8 = cut off early, 1.2 = allow some overshoot) | 1.0 |
-| `flux_mode` | "call_count" for Claude/Anthropic, "token" for Gemini/Google models | call_count |
+| `flux_window_hours` | How far back to look at usage data | 48 |
+| `cost_per_call_fallback` | Per-call cost if token metrics unavailable | $0.30 |
 
 Per-model pricing (Opus vs Haiku vs Gemini, etc.) and prompt cache
 discounts are built into `main.py`. A 10% regional premium is applied
 by default for non-global endpoints like us-east5. The pricing table
 should be checked periodically when new model versions are released —
-see `CLAUDE.md` for sources and what to check.
+see [`CLAUDE.md`](CLAUDE.md) for sources and what to check.
 
 ## Architecture
 
@@ -156,17 +149,31 @@ procedures, and troubleshooting.
 main.py                         # Cloud Run service (Flask)
 Dockerfile                      # Container definition
 requirements.txt                # Python dependencies
+CLAUDE.md                       # Project guide for Claude Code and developers
 terraform/
   main.tf                       # All GCP resources
   variables.tf                  # Input variables (self-documenting)
   outputs.tf                    # Operational outputs + Claude Code config
   versions.tf                   # Provider version constraints
-  backend.tf                    # Remote state config (optional)
+  backend.tf                    # State management docs
   terraform.tfvars.example      # Template for your variables
 docs/
   SOP.md                        # Full operational runbook
   MANUAL_STEPS.md               # Steps that cannot be automated
 ```
+
+### CLAUDE.md
+
+[`CLAUDE.md`](CLAUDE.md) is automatically loaded by
+[Claude Code](https://claude.com/claude-code) for project context. It's
+also useful as a human onboarding document — it covers:
+
+- Key concepts and common pitfalls (three-identity model, billing lag)
+- How the two enforcement mechanisms work
+- Terraform workflow and state management
+- Secrets policy
+- Pricing table maintenance checklist (what to check and when)
+- Common tasks as a quick-reference
 
 ## Recovery
 
