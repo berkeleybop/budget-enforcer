@@ -136,23 +136,21 @@ timescales and data sources.
 **Lag: 12-24 hours** (GCP billing data delay). This is the ground truth
 but it means a user could burn $50+ past a $5 budget before it fires.
 
-### 2. Flux-based (GET /check-usage) — approximate but fast
+### 2. Flux-based (GET /check-usage) — precise and fast
 
 1. Cloud Scheduler hits `/check-usage` every 5 minutes
-2. The endpoint queries Cloud Monitoring for recent API call volume
-3. It estimates spend: `total_calls * cost_per_call_estimate`
+2. The endpoint queries Cloud Monitoring for actual token counts
+   (`publisher/online_serving/token_count` — works for both Anthropic
+   and Google models)
+3. It computes cost per model using the PRICING table in `main.py`,
+   including cache discounts and the regional premium
 4. It compares against: `FLUX_BUDGET * ENFORCEMENT_TOLERANCE`
-5. If exceeded, keys are disabled
+5. If exceeded, keys are disabled and Slack is notified (if configured)
 
 **Lag: 3-5 minutes** (Cloud Monitoring data delay).
 
-The flux estimator has two modes:
-- **`call_count`** (default): Counts API calls from the `response_count`
-  metric and multiplies by a per-call cost estimate. Works for ALL
-  models including Anthropic (Claude). Less precise but universal.
-- **`token`**: Uses actual token count metrics. More precise but ONLY
-  works for Google-native models (Gemini, PaLM). Anthropic models
-  do NOT populate these metrics on Vertex AI.
+If token metrics return no data, falls back to counting API calls
+(`response_count`) with a conservative per-call cost estimate.
 
 ### Enforcement tolerance
 
@@ -165,12 +163,22 @@ estimator triggers:
 This only affects the flux estimator. The billing-based path always
 enforces at exactly 100%.
 
+### Notifications
+
+When keys are disabled, two notification channels can fire:
+- **GCP budget alert emails** (50/75/90/95/100% thresholds) — sent to
+  billing admins and project owners. See `docs/MANUAL_STEPS.md` step 6.
+- **Slack webhook** (optional) — posts immediately when the enforcer
+  disables keys, with project, SA, reason, and recovery pointer.
+  See `docs/MANUAL_STEPS.md` step 7 for setup.
+
 **Where things break (in order of likelihood):**
 - Invoker SA lost `roles/run.invoker` binding (after Cloud Run redeploy)
 - Pub/Sub subscription missing OIDC auth config
 - `FLUX_BUDGET` set to 0 or not matching `monthly_budget_amount`
 - Budget scoped to wrong services (missing Claude marketplace charges)
 - `SERVICE_ACCOUNT_EMAIL` pointing at admin SA instead of consumer SA
+- Slack webhook URL expired or channel archived (notifications fail silently)
 
 ## Testing the pipeline
 
@@ -212,6 +220,8 @@ Replace `TOPIC_NAME`, `SERVICE_NAME`, etc. with values from
 - **Recovery after key disable**: See `docs/SOP.md` recovery section (R1-R4)
 - **Get all operational values**: `terraform output`
 - **Get Claude Code config**: `terraform output claude_code_env_snippet`
+- **Set up Slack notifications**: Add `slack_webhook_url` in `terraform.tfvars`
+- **Check billing admins**: See `docs/MANUAL_STEPS.md` step 6
 - **Check flux estimator status**: `curl -s CLOUD_RUN_URL/status | python3 -m json.tool`
 
 ## Pricing table maintenance
