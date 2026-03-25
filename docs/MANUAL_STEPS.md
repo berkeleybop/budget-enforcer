@@ -3,7 +3,80 @@
 These steps cannot be automated with Terraform and must be done by hand.
 Everything else is handled by `terraform apply` — see `terraform/`.
 
+## Prerequisites: who you need to be
+
+Before starting, make sure you understand which identity to use. There
+are two options, and **you should pick one and use it for all steps
+below** unless a step explicitly says otherwise.
+
+### Option A: Personal Google account (recommended for first-time setup)
+
+Log in with your LBL email (e.g. `yourname@lbl.gov`) via the browser
+for Cloud Console steps, and via CLI for command-line steps:
+
+```bash
+gcloud auth login                        # For gcloud commands
+gcloud auth application-default login    # For Terraform
+gcloud config set project YOUR_PROJECT_ID
+```
+
+**Required role:** Owner on the GCP project. If Science IT created the
+project for you, you should already be Owner. Verify with:
+
+```bash
+gcloud projects get-iam-policy YOUR_PROJECT_ID \
+  --format="table(bindings.role,bindings.members)" \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:yourname@lbl.gov"
+```
+
+You should see `roles/owner` in the output.
+
+### Option B: Service account with elevated permissions
+
+If you have an existing admin service account with a JSON key:
+
+```bash
+gcloud auth activate-service-account --key-file=PATH_TO_KEY.json
+export GOOGLE_APPLICATION_CREDENTIALS=PATH_TO_KEY.json
+gcloud config set project YOUR_PROJECT_ID
+```
+
+**Required roles on the service account:**
+- `roles/editor`
+- `roles/resourcemanager.projectIamAdmin`
+- `roles/iam.serviceAccountKeyAdmin`
+- `roles/run.admin`
+
+> **Common pitfall:** The `roles/editor` role does NOT include
+> `run.services.setIamPolicy`. If you get a 403 error about this
+> permission during `terraform apply`, your service account also needs
+> `roles/resourcemanager.projectIamAdmin` (which grants it indirectly).
+> Alternatively, switch to your personal Owner account (Option A).
+
+### Which identity does what?
+
+| Step | Who | Why |
+|---|---|---|
+| 1. Get GCP project | You (browser) | Request to Science IT |
+| 2. Enable models | You (browser) | Model Garden is UI-only |
+| 3. Consumer SA key | Same as step 5 | Needs `iam.serviceAccountKeyAdmin` |
+| 4. Build container | Same as step 5 | Needs `cloudbuild.builds.create` |
+| 5. Terraform apply | Owner or admin SA | Creates all resources |
+| 6. Billing admins | You (browser) | Billing account access |
+| 7. Slack webhook | You (browser) | Slack workspace access |
+
+**You do NOT need to switch identities between steps.** If you
+authenticate as Owner (Option A), that single identity has all the
+permissions needed for every step. If you use a service account
+(Option B), it works for steps 3-5 but you'll still need your browser
+(as yourself) for steps 1, 2, 6, and 7.
+
+---
+
 ## 1. Get a GCP project from Science IT
+
+> **Run as:** yourself (browser)
 
 - Contact Science IT (Tim Fong <tyfong@lbl.gov>) to create a new GCP
   project tied to your project code (ask Chris and Nomi for the code).
@@ -12,6 +85,8 @@ Everything else is handled by `terraform apply` — see `terraform/`.
   `terraform.tfvars`.
 
 ## 2. Enable Anthropic models in Model Garden
+
+> **Run as:** yourself (browser, logged into Cloud Console)
 
 This is UI-only — there is no API or Terraform resource for it.
 
@@ -34,11 +109,44 @@ This is UI-only — there is no API or Terraform resource for it.
    - Select **us-east5** for region
 5. Note the exact model IDs (e.g. `claude-sonnet-4-5@20250929`)
 
-## 3. Create the consumer SA JSON key
+## 3. Build and push the container image
 
-After `terraform apply` creates the service accounts, you need to
-manually create a JSON key for the consumer SA. This is intentionally
-kept out of Terraform to avoid storing secrets in Terraform state.
+> **Run as:** Owner (Option A) or admin SA (Option B)
+
+Before the first `terraform apply`, build and push the container:
+
+```bash
+cd /path/to/budget-enforcer
+gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/budget-enforcer .
+```
+
+Then set `container_image` in your `terraform.tfvars`.
+
+## 4. Run Terraform
+
+> **Run as:** Same identity as step 3. Do not switch.
+
+```bash
+cd terraform/
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your project details
+
+terraform init
+terraform plan    # Review what will be created
+terraform apply
+```
+
+If you see a 403 error about `run.services.setIamPolicy`, your service
+account is missing `roles/resourcemanager.projectIamAdmin`. Either add
+that role or switch to your personal Owner account (see Prerequisites).
+
+## 5. Create the consumer SA JSON key
+
+> **Run as:** Same identity as steps 3-4. Do not switch.
+
+After `terraform apply` creates the service accounts, create a JSON
+key for the consumer SA. This is intentionally kept out of Terraform
+to avoid storing secrets in Terraform state.
 
 ```bash
 # Get the consumer SA email from Terraform output
@@ -55,33 +163,9 @@ gcloud iam service-accounts keys create consumer-key.json \
 
 > **This key is gitignored** (*.json in .gitignore). Never commit it.
 
-## 4. Build and push the container image
-
-Before the first `terraform apply`, build and push the container:
-
-```bash
-cd /path/to/budget-enforcer
-gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/budget-enforcer .
-```
-
-Then set `container_image` in your `terraform.tfvars`.
-
-## 5. Authenticate for Terraform
-
-Terraform can run as your **personal Google account** (Owner role) or
-a service account with sufficient permissions (Editor + Project IAM
-Admin + Service Account Key Admin). See `CLAUDE.md` for details.
-
-```bash
-# Personal account:
-gcloud auth application-default login
-
-# Or service account:
-gcloud auth activate-service-account --key-file=PATH_TO_KEY.json
-export GOOGLE_APPLICATION_CREDENTIALS=PATH_TO_KEY.json
-```
-
 ## 6. Verify billing admins and notification recipients
+
+> **Run as:** yourself (browser, Cloud Console)
 
 Budget alert emails (50%/75%/90%/95% thresholds) are sent by GCP to
 billing admins and project owners. Verify that the right people receive
@@ -117,6 +201,8 @@ If your team lead or PI should receive budget alerts:
 
 ## 7. Set up Slack notifications (optional)
 
+> **Run as:** yourself (browser, Slack)
+
 When the budget-enforcer disables keys, it can post a notification to
 a Slack channel so your team is immediately aware. This is optional —
 if not configured, the enforcer still works but only logs to Cloud Run.
@@ -147,7 +233,7 @@ Add it to your `terraform.tfvars`:
 slack_webhook_url = "https://hooks.slack.com/services/T.../B.../xxx"
 ```
 
-Then apply:
+Then apply (same identity as step 4):
 
 ```bash
 cd terraform/
