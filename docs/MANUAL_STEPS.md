@@ -121,15 +121,23 @@ When the budget-enforcer disables keys, it can post a notification to
 a Slack channel so your team is immediately aware. This is optional —
 if not configured, the enforcer still works but only logs to Cloud Run.
 
-### Create a Slack webhook
+### Create a Slack app with incoming webhook
 
-1. Go to your Slack workspace's app management:
-   `https://YOUR_WORKSPACE.slack.com/apps`
-2. Search for **Incoming Webhooks** and add it
-3. Choose the channel where alerts should go (e.g. `#infrastructure`
+> **Do not use the legacy "Incoming Webhooks" custom integration** — it
+> is deprecated by Slack and will be removed. Use a Slack app instead.
+
+1. Go to `https://api.slack.com/apps`
+2. Click **Create New App** > **From scratch**
+3. Name it (e.g. `Budget Enforcer`) and select your workspace
+4. Click **Create App**
+5. In the app settings, click **Incoming Webhooks** in the left sidebar
+6. Toggle **Activate Incoming Webhooks** to **On**
+7. Click **Add New Webhook to Workspace**
+8. Select the channel where alerts should go (e.g. `#infrastructure`
    or `#budget-alerts`)
-4. Copy the webhook URL (looks like:
-   `https://hooks.slack.com/services/T.../B.../xxx`)
+9. Click **Allow**
+10. Copy the **Webhook URL** (looks like:
+    `https://hooks.slack.com/services/T.../B.../xxx`)
 
 ### Configure the webhook
 
