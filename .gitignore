@@ -1,18 +1,31 @@
-# This .gitignore is appropriate for repositories deployed to GitHub Pages and using
-# a Gemfile as specified at https://github.com/github/pages-gem#conventional
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+# Note: .terraform.lock.hcl is intentionally NOT ignored — it should be
+# committed so all developers use the same provider versions.
 
-# Basic Jekyll gitignores (synchronize to Jekyll.gitignore)
+# GCP credentials — never commit these
+*.json
+!package.json
+!package-lock.json
+
+# Jekyll (legacy)
 _site/
 .sass-cache/
 .jekyll-cache/
 .jekyll-metadata
-
-# Additional Ruby/bundler ignore for when you run: bundle install
 /vendor
-
-# Specific ignore for GitHub Pages
-# GitHub Pages will always use its own deployed version of pages-gem 
-# This means GitHub Pages will NOT use your Gemfile.lock and therefore it is
-# counterproductive to check this file into the repository.
-# Details at https://github.com/github/pages-gem/issues/768
 Gemfile.lock
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store

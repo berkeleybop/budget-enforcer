@@ -1,0 +1,30 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — it will NOT be committed.
+
+# Required — get these from Science IT / Cloud Console
+project_id         = "your-gcp-project-id"
+billing_account_id = "XXXXXX-XXXXXX-XXXXXX"
+
+# Required — build and push the container first:
+#   cd budget-enforcer/
+#   gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/budget-enforcer .
+container_image = "gcr.io/your-gcp-project-id/budget-enforcer"
+
+# Optional — override defaults
+# resource_prefix       = "tf"       # Prefix for all GCP resource names
+# consumer_sa_name      = "vertex-ai-consumer"
+# admin_sa_name         = "budget-enforcer-admin"
+# vertex_ai_region      = "us-east5"
+# cloud_run_region      = "us-central1"
+# monthly_budget_amount = 100
+# budget_display_name   = ""         # Defaults to "{prefix}-vertex-ai-monthly-budget"
+
+# Flux estimator — real-time spend estimation (bridges 12-24h billing lag)
+# Uses actual token counts per model with cache-aware pricing.
+# Pricing table is in main.py — update there when model prices change.
+# flux_window_hours       = 48      # Hours of usage data to estimate from
+# enforcement_tolerance   = "1.0"   # 0.8=early cutoff, 1.0=exact, 1.2=tolerant
+# cost_per_call_fallback  = "0.30"  # Fallback if token metrics unavailable
+
+# Optional: Slack notification when keys are disabled
+# slack_webhook_url = "https://hooks.slack.com/services/T.../B.../xxx"
