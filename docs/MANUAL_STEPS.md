@@ -1,7 +1,17 @@
 # Manual Steps
 
-These steps cannot be automated with Terraform and must be done by hand.
-Everything else is handled by `terraform apply` — see `terraform/`.
+These steps require a browser or human judgment and cannot be fully
+automated. Claude Code will walk you through them and tell you when
+each is needed.
+
+- **Steps 1, 2, 6, 7** — You do these in a browser (Cloud Console,
+  Slack). Claude will tell you what to click and what values to enter.
+- **Steps 3, 4, 5** — Claude runs these for you via `gcloud` and
+  `terraform` commands. They're documented here so you can understand
+  what's happening or run them manually if needed.
+
+Everything beyond these steps is handled by `terraform apply` —
+see `terraform/`.
 
 ## Prerequisites: who you need to be
 

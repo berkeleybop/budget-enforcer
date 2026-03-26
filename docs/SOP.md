@@ -3,9 +3,16 @@
 ## Overview
 
 This document covers **deployment, operations, and recovery** for the
-budget-enforcer. Setup is done via Terraform (see `MANUAL_STEPS.md` for
-prerequisites), but the commands below show what actually happens under
-the hood and how to operate the system day-to-day.
+budget-enforcer.
+
+**These commands are typically run by Claude Code on your behalf.** When
+you ask Claude to deploy, check spend, change the budget, or recover
+from enforcement, these are the commands it uses. They're documented
+here so you can:
+
+- **Understand** what Claude is doing when it operates the system
+- **Verify** Claude's work by checking the same outputs
+- **Operate manually** if you need to work without Claude
 
 > **For initial setup**, follow `docs/MANUAL_STEPS.md` and then
 > `terraform apply`. This SOP is for understanding, operating, and

@@ -4,6 +4,23 @@ Automatic budget enforcement for Vertex AI on GCP. When spending exceeds
 a configured threshold, this service disables the API consumer service
 account's keys, immediately halting Vertex AI API calls.
 
+## How we work with this repo
+
+This system is designed to be operated via
+[Claude Code](https://claude.com/claude-code). The typical workflow is:
+
+1. **You** make decisions (budget amount, which models to enable, when
+   to deploy)
+2. **Claude** reads `CLAUDE.md` for project context, uses Terraform to
+   make changes, and runs `gcloud` commands for operations and recovery
+3. **The docs** exist so both you and Claude understand what's happening
+   — you can verify Claude's work, and Claude can reason about the
+   system
+
+You can also operate everything manually — all commands are documented
+in `docs/SOP.md`. But the intended path is collaborative: you describe
+what you want, Claude executes it.
+
 ## Budget limit
 
 The monthly spending limit is set via the `monthly_budget_amount` variable

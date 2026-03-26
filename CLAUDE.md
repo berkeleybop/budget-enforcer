@@ -1,5 +1,19 @@
 # CLAUDE.md — Budget Enforcer
 
+## Your role
+
+You (Claude) are the primary operator of this system. Developers work
+with you to deploy, configure, monitor, and recover the budget enforcer.
+When a developer asks you to do something with this repo, you should:
+
+1. Read this file for context and constraints
+2. Use Terraform (`terraform/`) for infrastructure changes
+3. Use `gcloud` commands for operations and recovery (see `docs/SOP.md`)
+4. Use `docs/MANUAL_STEPS.md` to guide the developer through browser-
+   based steps that you cannot do (Model Garden, Slack setup, etc.)
+
+The developer makes decisions. You execute. The docs serve both of you.
+
 ## What this repo is
 
 A GCP Cloud Run service that enforces Vertex AI spending limits by
