@@ -190,9 +190,15 @@ variable "cost_per_call_fallback" {
 variable "container_image" {
   type        = string
   description = <<-EOT
-    Full container image URI for the budget-enforcer. Build and push with:
-      gcloud builds submit --tag gcr.io/YOUR_PROJECT/budget-enforcer ../
-    Then set this variable to: gcr.io/YOUR_PROJECT/budget-enforcer
-    Or use Artifact Registry: REGION-docker.pkg.dev/YOUR_PROJECT/REPO/budget-enforcer
+    Full container image URI for the budget-enforcer. Pin by @sha256
+    digest, not by :latest tag, so each rebuild produces a real Terraform
+    diff and rolls a new Cloud Run revision cleanly. Build and capture
+    the digest with:
+      gcloud builds submit --tag gcr.io/YOUR_PROJECT/budget-enforcer ../ \
+        --format='value(results.images[0].digest)'
+    Then set this variable to:
+      gcr.io/YOUR_PROJECT/budget-enforcer@sha256:<digest>
+    Or use Artifact Registry:
+      REGION-docker.pkg.dev/YOUR_PROJECT/REPO/budget-enforcer@sha256:<digest>
   EOT
 }

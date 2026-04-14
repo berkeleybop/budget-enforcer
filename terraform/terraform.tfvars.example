@@ -5,10 +5,21 @@
 project_id         = "your-gcp-project-id"
 billing_account_id = "XXXXXX-XXXXXX-XXXXXX"
 
-# Required — build and push the container first:
+# Required — build, push, and pin the container image by digest.
+#
+# Pinning by @sha256 (instead of a :latest tag) is strongly recommended:
+#   - Terraform sees every rebuild as a real diff and rolls a new Cloud
+#     Run revision automatically (no `-replace` gymnastics, which can
+#     drop the Pub/Sub invoker IAM binding — see docs/SOP.md).
+#   - You get a reproducible audit trail of exactly which bits shipped.
+#   - Cloud Run can't silently re-pull a newer :latest on revision churn.
+#
+# Build and capture the digest in one command (from repo root):
 #   cd budget-enforcer/
-#   gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/budget-enforcer .
-container_image = "gcr.io/your-gcp-project-id/budget-enforcer"
+#   gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/budget-enforcer . \
+#     --format='value(results.images[0].digest)'
+# Then paste the result below as @sha256:...
+container_image = "gcr.io/your-gcp-project-id/budget-enforcer@sha256:REPLACE_WITH_ACTUAL_DIGEST"
 
 # Optional — override defaults
 # resource_prefix       = "tf"       # Prefix for all GCP resource names

@@ -59,7 +59,12 @@ Variables are in `terraform.tfvars` (gitignored). The example file
 shows what's needed. Required variables:
 - `project_id` — GCP project ID (the string, not the numeric project number)
 - `billing_account_id` — GCP billing account ID (format: XXXXXX-XXXXXX-XXXXXX)
-- `container_image` — Built container image URI
+- `container_image` — Built container image URI, pinned by `@sha256:`
+  digest (not `:latest`). See `docs/SOP.md` "Redeploy after a code
+  change" for the build/pin/apply flow. Pinning is load-bearing: using
+  `:latest` forced us to `-replace` the Cloud Run service on each
+  redeploy, which wiped its IAM bindings and broke the billing-alert
+  path silently.
 
 ### Resource prefix
 

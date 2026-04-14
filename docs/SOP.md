@@ -205,31 +205,64 @@ This updates both the GCP billing budget and the flux estimator's
 ### Redeploy after a code change
 
 Editing `main.py` (or anything else baked into the container) requires
-both a fresh image and a Cloud Run revision rollout. **Plain `terraform
-apply` is not enough** — `container_image` in `terraform.tfvars` uses
-the `:latest` tag, so Terraform sees no diff in the image string and
-will not roll a new revision even though the underlying digest changed.
+a fresh image, a `terraform.tfvars` digest bump, and an apply. Because
+we pin `container_image` by `@sha256:` digest, each rebuild produces a
+real Terraform diff and Cloud Run rolls a new revision in-place — the
+service is not destroyed, so its IAM policies (including the critical
+Pub/Sub invoker binding) stay attached.
 
 ```bash
-# 1. Build and push the new image (from repo root)
-gcloud builds submit --tag gcr.io/$PROJECT_ID/budget-enforcer .
+# 1. Build, push, and capture the digest in one go (from repo root)
+gcloud builds submit --tag gcr.io/$PROJECT_ID/budget-enforcer . \
+  --format='value(results.images[0].digest)'
+# Output: sha256:abc123...
 
-# 2. Force Terraform to replace the Cloud Run service so it picks up
-#    the new digest. This also reapplies the Pub/Sub OIDC invoker
-#    binding in the same run, which is safer than `gcloud run deploy`.
+# 2. Update terraform.tfvars with the new digest:
+#      container_image = "gcr.io/$PROJECT_ID/budget-enforcer@sha256:abc123..."
+
+# 3. Apply — plain apply, no -replace needed
 cd terraform/
-terraform apply -replace=google_cloud_run_v2_service.budget_enforcer
+terraform apply
+
+# 4. Smoke-test the billing path (see "Smoke test after any redeploy"
+#    below) — takes 10 seconds, catches invoker-binding drift.
 ```
 
+**Do NOT use `terraform apply -replace=google_cloud_run_v2_service.…`**
+to roll a new image. That destroys and recreates the service, which
+wipes its attached IAM bindings. The separate `iam_member` resource
+then becomes stale in state and drops out on next refresh, silently
+breaking the billing-alert path. The digest-bump flow above avoids
+this entirely.
+
 The consumer SA and its JSON keys are not in Terraform state, so they
-survive the replace untouched. Slack webhook, budget thresholds, and
+are untouched by any apply. Slack webhook, budget thresholds, and
 Cloud Scheduler jobs are re-applied from `terraform.tfvars` with no
 change in value.
 
-Alternative: pin `container_image` to an immutable digest
-(`gcr.io/PROJECT/budget-enforcer@sha256:…`) and bump it on each build.
-Terraform will then see the diff naturally and roll a revision without
-needing `-replace`. More reproducible, more typing.
+### Smoke test after any redeploy
+
+After any `terraform apply` that touches the Cloud Run service, verify
+the billing-alert path is still wired end-to-end. This takes ~10 seconds
+and catches the exact drift mode described above.
+
+```bash
+# Publish a sub-threshold test message. costAmount < budgetAmount so
+# keys will NOT be disabled — the service just acknowledges and returns.
+gcloud pubsub topics publish tf-budget-alerts \
+  --project=$PROJECT_ID \
+  --message='{"budgetAmount":100,"costAmount":1,"budgetDisplayName":"healthcheck"}'
+
+# Wait ~10s, then check logs. Expect HTTP 200 and text
+# "Budget alert received but threshold not met".
+# If you see 403, the invoker IAM binding is broken — run
+# `terraform plan` and look for a missing
+# google_cloud_run_v2_service_iam_member.invoker.
+gcloud logging read \
+  "resource.type=cloud_run_revision AND resource.labels.service_name=tf-budget-enforcer" \
+  --project=$PROJECT_ID --limit=3 \
+  --format="table(timestamp, httpRequest.status, textPayload)"
+```
 
 ### Verify the pipeline end-to-end
 
