@@ -27,5 +27,10 @@ Gemfile.lock
 .vscode/
 .idea/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # OS
 .DS_Store
