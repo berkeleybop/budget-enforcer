@@ -94,8 +94,10 @@ output "claude_code_env_snippet" {
     export DISABLE_NON_ESSENTIAL_MODEL_CALLS=1
     export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your-key.json
     # Set model names from Model Garden (check for latest versions):
-    # export ANTHROPIC_MODEL='claude-sonnet-4-5@20250929'
+    # export ANTHROPIC_MODEL='claude-sonnet-4-6@default'
     # export ANTHROPIC_SMALL_FAST_MODEL='claude-haiku-4-5@20251001'
+    # For the most capable model:
+    # export ANTHROPIC_MODEL='claude-opus-4-6@default'
   EOT
   description = "Shell snippet for developers to configure Claude Code with this project's Vertex AI setup."
 }

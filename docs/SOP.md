@@ -202,6 +202,35 @@ terraform apply
 This updates both the GCP billing budget and the flux estimator's
 `FLUX_BUDGET` in a single operation.
 
+### Redeploy after a code change
+
+Editing `main.py` (or anything else baked into the container) requires
+both a fresh image and a Cloud Run revision rollout. **Plain `terraform
+apply` is not enough** — `container_image` in `terraform.tfvars` uses
+the `:latest` tag, so Terraform sees no diff in the image string and
+will not roll a new revision even though the underlying digest changed.
+
+```bash
+# 1. Build and push the new image (from repo root)
+gcloud builds submit --tag gcr.io/$PROJECT_ID/budget-enforcer .
+
+# 2. Force Terraform to replace the Cloud Run service so it picks up
+#    the new digest. This also reapplies the Pub/Sub OIDC invoker
+#    binding in the same run, which is safer than `gcloud run deploy`.
+cd terraform/
+terraform apply -replace=google_cloud_run_v2_service.budget_enforcer
+```
+
+The consumer SA and its JSON keys are not in Terraform state, so they
+survive the replace untouched. Slack webhook, budget thresholds, and
+Cloud Scheduler jobs are re-applied from `terraform.tfvars` with no
+change in value.
+
+Alternative: pin `container_image` to an immutable digest
+(`gcr.io/PROJECT/budget-enforcer@sha256:…`) and bump it on each build.
+Terraform will then see the diff naturally and roll a revision without
+needing `-replace`. More reproducible, more typing.
+
 ### Verify the pipeline end-to-end
 
 Send a test message (**this will disable the consumer key**):

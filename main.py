@@ -67,6 +67,12 @@ PRICING = {
     "claude-sonnet-4":       {"input": 3.00,  "output": 15.00},
     "claude-haiku-4-5":      {"input": 1.00,  "output": 5.00},
     "claude-haiku-3-5":      {"input": 0.80,  "output": 4.00},
+    # Pseudo-models that appear in the publisher/online_serving/token_count
+    # metric but aren't billable models. The count_tokens API reports itself
+    # as "count-tokens" with 0/0 tokens. Price at zero so the warning stays
+    # quiet for known no-cost traffic. See CLAUDE.md "Pseudo-models in the
+    # token_count metric" for the full list.
+    "count-tokens":          {"input": 0.00,  "output": 0.00},
     # Google — Gemini (prices per 1M tokens, USD)
     # Source: https://cloud.google.com/vertex-ai/generative-ai/pricing
     "gemini-2.0-flash":          {"input": 0.15,  "output": 0.60},
@@ -322,7 +328,16 @@ def _estimate_spend_from_tokens():
     total_spend = 0.0
 
     for model, token_types in totals.items():
-        prices = PRICING.get(model, FALLBACK_PRICING)
+        if model in PRICING:
+            prices = PRICING[model]
+        else:
+            prices = FALLBACK_PRICING
+            print(
+                f"WARNING: model '{model}' not in PRICING table — "
+                f"using FALLBACK_PRICING (input=${FALLBACK_PRICING['input']}, "
+                f"output=${FALLBACK_PRICING['output']}). "
+                f"Add it to PRICING in main.py to get accurate cost estimates."
+            )
         model_cost = 0.0
 
         for token_type, count in token_types.items():

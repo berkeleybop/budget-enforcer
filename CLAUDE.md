@@ -256,9 +256,37 @@ Things to check:
   regional surcharge still applies for your endpoint region
 - `CACHE_MULTIPLIERS` — verify cache pricing hasn't changed
 - `FALLBACK_PRICING` — should match the most expensive model you
-  might encounter, so unknown models overestimate rather than under
+  might encounter, so unknown models overestimate rather than under.
+  **Keep this aggressive.** The current value (Opus 4.1 at $15/$75
+  per MTok) is intentionally the worst-case "disaster pricing"
+  ceiling, not a value to right-size against currently-enabled
+  models. If a new model appears that the estimator doesn't know
+  about, we want it overestimated so the budget enforcer fires
+  early rather than letting spend slip past. Do not lower this
+  just because the actively-enabled models are cheaper.
 
 When updating: edit `main.py`, rebuild the container, `terraform apply`.
+
+### Pseudo-models in the token_count metric
+
+The `publisher/online_serving/token_count` metric doesn't only report
+real billable models. Anthropic's pre-flight utility endpoints show up
+as pseudo-models with `model_user_id` values that look like model names
+but aren't. Known pseudo-models:
+
+- `count-tokens` — the Anthropic `count_tokens` API endpoint. Reports
+  0 input / 0 output tokens per call (it counts tokens, it doesn't
+  generate them).
+
+These have no billing impact, but if they aren't in the `PRICING`
+dict they trip the "unknown model" warning we log on fallback, which
+creates log noise. Keep them in `PRICING` with `{"input": 0, "output": 0}`
+so the warning stays reserved for genuinely-unknown real models.
+
+If a new unknown-model warning appears in Cloud Run logs, first check
+whether it's a pseudo-model (0 tokens, looks like an API endpoint name)
+or a real billable model. Add pseudo-models at zero cost; add real
+models at their actual price.
 
 ## Style and conventions
 
