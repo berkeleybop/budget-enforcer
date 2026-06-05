@@ -88,9 +88,11 @@ permissions needed for every step. If you use a service account
 
 > **Run as:** yourself (browser)
 
-- Contact Science IT (Tim Fong <tyfong@lbl.gov>) to create a new GCP
-  project tied to your project code (ask Chris and Nomi for the code).
-- Science IT will attach the project to your LBL account in GCP.
+- Contact your institution's IT / cloud admin group to provision a new
+  GCP project under your organization's billing account. You'll
+  typically need a project code or cost center to charge against —
+  ask your group lead or grant administrator if you don't have one.
+- They will attach the project to your account in GCP.
 - Note the **project ID** (not the display name) — you'll need it for
   `terraform.tfvars`.
 

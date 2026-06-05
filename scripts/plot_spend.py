@@ -12,7 +12,7 @@ create an isolated venv — see scripts/README.md.
 Typical use:
 
     # Workshop day retrospective, 15-minute buckets
-    scripts/plot_spend.py --project gene-ontology-465618 \\
+    scripts/plot_spend.py --project YOUR_PROJECT_ID \\
         --start 2026-04-14T13:00Z --end 2026-04-14T21:00Z \\
         --bucket-minutes 15 \\
         --workshop-start 2026-04-14T14:00Z \\
@@ -20,8 +20,11 @@ Typical use:
         --output /tmp/workshop_spend.png
 
     # Last 24 hours, 30-minute buckets
-    scripts/plot_spend.py --project gene-ontology-465618 --hours 24 \\
+    scripts/plot_spend.py --project YOUR_PROJECT_ID --hours 24 \\
         --output /tmp/spend_24h.png
+
+YOUR_PROJECT_ID is the GCP project ID string (not the numeric project
+number, not the display name). See scripts/README.md for how to find it.
 """
 from __future__ import annotations
 

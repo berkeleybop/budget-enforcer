@@ -8,14 +8,17 @@ cache / regional-premium logic as main.py so numbers match /check-usage.
 Typical use:
 
     # Last 48 hours (matches /check-usage)
-    scripts/spend_report.py --project gene-ontology-465618 --hours 48
+    scripts/spend_report.py --project YOUR_PROJECT_ID --hours 48
 
     # Last week retrospective
-    scripts/spend_report.py --project gene-ontology-465618 --hours 168
+    scripts/spend_report.py --project YOUR_PROJECT_ID --hours 168
 
     # Arbitrary window
-    scripts/spend_report.py --project gene-ontology-465618 \\
+    scripts/spend_report.py --project YOUR_PROJECT_ID \\
         --start 2026-04-14T13:00Z --end 2026-04-14T21:00Z
+
+YOUR_PROJECT_ID is the GCP project ID string (not the numeric project
+number, not the display name). See scripts/README.md for how to find it.
 """
 from __future__ import annotations
 

@@ -14,6 +14,23 @@ same pricing logic as `main.py`, so their output matches the service's
   Mirrors `main.py`; update both together when prices change.
 - **`_monitoring.py`** — shared Cloud Monitoring paginating query helper.
 
+## Finding your project ID
+
+`YOUR_PROJECT_ID` in the examples below is the GCP **project ID** — the
+human-readable string, not the numeric project number and not the
+display name. Project IDs are 6–30 characters, lowercase letters,
+digits, and hyphens, and must start with a letter. They often look
+like `my-research-project`, a name with a numeric suffix that GCP
+auto-appends to disambiguate (`my-research-project-12345`,
+`acme-prod-465618`), or an organization-mandated naming scheme. To
+find yours:
+
+- In the Cloud Console, the project ID is shown in the project picker
+  next to the project name.
+- From the CLI: `gcloud projects list` or `gcloud config get-value project`.
+
+If you don't have a GCP project yet, see `docs/MANUAL_STEPS.md` step 1.
+
 ## Auth
 
 Uses the active `gcloud` identity. Any principal with
