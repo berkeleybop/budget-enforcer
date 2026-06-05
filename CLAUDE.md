@@ -117,12 +117,29 @@ export GOOGLE_APPLICATION_CREDENTIALS=PATH_TO_KEY.json
 
 ## Secrets and credentials
 
+This repo is public (as of 2026-06-05). Every committed file is
+world-readable, every commit message body is permanent, and forks
+make deletion irreversible. The rules below are therefore load-
+bearing, not just hygiene.
+
 - **Never commit JSON key files.** They are gitignored (`*.json`).
 - **Never commit terraform.tfvars.** It is gitignored.
 - **No real project IDs, SA emails, or keys** should appear in any
-  committed file. Use variables and placeholder values only.
+  committed file. Use variables and placeholder values only. This
+  applies to commit message bodies as well as code and docs.
 - Consumer SA JSON keys are created manually, not via Terraform,
   to keep secrets out of Terraform state.
+
+History note: pre-publish commits before `ae4ec6a` contain a real
+GCP project ID in two script docstrings and a named LBL Science IT
+contact in `docs/MANUAL_STEPS.md`. This exposure was deliberately
+accepted (not overlooked) in exchange for preserving commit-by-
+commit authorship rather than force-pushing a rewritten history.
+Don't propose a history rewrite to "fix" it — the trade-off was
+considered and the residue is not operationally exploitable
+(project IDs grant no IAM access on their own, the Pub/Sub topic
+and Cloud Run endpoint are both auth-gated). Do scrub aggressively
+in any *new* commit.
 
 ## Budget limit (the most important setting)
 
