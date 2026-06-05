@@ -57,7 +57,13 @@ app = Flask(__name__)
 
 PRICING = {
     # Anthropic — Claude (prices per 1M tokens, USD)
-    # Source: https://docs.anthropic.com/en/docs/about-claude/models
+    # Source: https://platform.claude.com/docs/en/docs/about-claude/pricing
+    # Verified 2026-06-05. Opus 4.5/4.6/4.7/4.8 are all the same tier ($5/$25);
+    # 4 and 4.1 are deprecated and remain at the legacy $15/$75 tier.
+    # Note: Opus 4.7+ uses a new tokenizer that can emit up to ~35% more
+    # tokens for the same text — same price per token, more tokens per call.
+    "claude-opus-4-8":       {"input": 5.00,  "output": 25.00},
+    "claude-opus-4-7":       {"input": 5.00,  "output": 25.00},
     "claude-opus-4-6":       {"input": 5.00,  "output": 25.00},
     "claude-opus-4-5":       {"input": 5.00,  "output": 25.00},
     "claude-opus-4-1":       {"input": 15.00, "output": 75.00},
