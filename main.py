@@ -533,6 +533,78 @@ def _notify_slack(reason, disabled_keys):
         print(f"Slack notification failed: {e}")
 
 
+# ---------------------------------------------------------------------------
+# POST /re-enable — Re-enable consumer SA keys (manual recovery)
+# ---------------------------------------------------------------------------
+
+@app.route("/re-enable", methods=["POST"])
+def re_enable_keys():
+    """Re-enable all disabled user-managed keys for the consumer SA.
+
+    Called manually during recovery (see SOP R1-R4). Sends a Slack
+    notification so the team knows keys are back online.
+    """
+    if not SERVICE_ACCOUNT_EMAIL:
+        return json.dumps({"error": "SERVICE_ACCOUNT_EMAIL not configured"}), 500, {"Content-Type": "application/json"}
+
+    client = iam_admin_v1.IAMClient()
+
+    list_request = iam_admin_v1.ListServiceAccountKeysRequest(
+        name=f"projects/{PROJECT_ID}/serviceAccounts/{SERVICE_ACCOUNT_EMAIL}"
+    )
+
+    keys = client.list_service_account_keys(request=list_request)
+
+    enabled_keys = []
+    for key in keys.keys:
+        if key.key_type == iam_admin_v1.ListServiceAccountKeysRequest.KeyType.USER_MANAGED and key.disabled:
+            enable_request = iam_admin_v1.EnableServiceAccountKeyRequest(
+                name=key.name
+            )
+            client.enable_service_account_key(request=enable_request)
+            enabled_keys.append(key.name)
+            print(f"Re-enabled key: {key.name}")
+
+    if enabled_keys:
+        _notify_slack_re_enable(enabled_keys)
+
+    return json.dumps({
+        "action": "keys_re_enabled",
+        "count": len(enabled_keys),
+    }), 200, {"Content-Type": "application/json"}
+
+
+def _notify_slack_re_enable(enabled_keys):
+    """Post a notification to Slack when keys are re-enabled."""
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    key_count = len(enabled_keys)
+    message = {
+        "text": (
+            f":white_check_mark: *Keys re-enabled* — "
+            f"{key_count} key(s) restored\n"
+            f"*Project:* `{PROJECT_ID}`\n"
+            f"*Consumer SA:* `{SERVICE_ACCOUNT_EMAIL}`\n"
+            f"*Note:* Monitor spend closely — keys are active again."
+        ),
+    }
+
+    data = json.dumps(message).encode("utf-8")
+    req = urllib.request.Request(
+        SLACK_WEBHOOK_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"Slack re-enable notification sent (status {resp.status})")
+    except (urllib.error.URLError, OSError) as e:
+        print(f"Slack re-enable notification failed: {e}")
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
