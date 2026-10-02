@@ -313,5 +313,9 @@ resource "google_billing_budget" "vertex_ai" {
 
   all_updates_rule {
     pubsub_topic = google_pubsub_topic.budget_alerts.id
+    # Default email recipients are only the billing account's admins/users,
+    # who are often central billing staff rather than the team. This adds
+    # the project's Owners so the people running the project get alerts.
+    enable_project_level_recipients = true
   }
 }

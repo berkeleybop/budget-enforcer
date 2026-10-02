@@ -179,9 +179,12 @@ enforces at exactly 100%.
 
 ### Notifications
 
-When keys are disabled, two notification channels can fire:
-- **GCP budget alert emails** (50/75/90/95/100% thresholds) — sent to
-  billing admins and project owners. See `docs/MANUAL_STEPS.md` step 6.
+Two notification channels, from two different sources:
+- **GCP budget alert emails** (50/75/90/95/100% thresholds) — sent by
+  GCP Billing itself, not by the enforcer, and on the same 12-24h lag.
+  Recipients are billing admins/users plus project owners; owners are
+  included only because the budget sets `enable_project_level_recipients`
+  (GCP's default omits them). See `docs/MANUAL_STEPS.md` step 6.
 - **Slack webhook** (optional) — posts immediately when the enforcer
   disables keys, with project, SA, reason, and recovery pointer.
   See `docs/MANUAL_STEPS.md` step 7 for setup.

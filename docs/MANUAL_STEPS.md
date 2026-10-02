@@ -187,7 +187,12 @@ these early-warning emails — they're your first signal before enforcement.
 2. Look at the **Permissions** panel on the right
 3. Anyone with `Billing Account Administrator` or `Billing Account User`
    will receive budget alert emails
-4. Project owners also receive them
+4. Project Owners also receive them, but only because Terraform sets
+   `enable_project_level_recipients` on the budget. GCP's default for a
+   billing-account budget is billing admins/users only — a budget created
+   by hand in the console won't email project owners unless that box is
+   checked. Billing admins are often central billing staff, so without
+   this flag the team itself may never see the alerts.
 
 Or via CLI (requires billing account access):
 
