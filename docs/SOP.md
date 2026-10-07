@@ -418,3 +418,97 @@ but no 100% email and keys aren't disabled, check Cloud Run logs for
 | Slack notification not sent | `SLACK_WEBHOOK_URL` empty or webhook expired | Check `terraform.tfvars`; test webhook URL manually |
 | Slack "spend estimator unavailable" warning | Both Cloud Monitoring queries (`token_count` and `response_count`) failed: API outage, throttling, or the admin SA lost `monitoring.viewer`. Keys are **not** disabled; only the billing path enforces until it recovers | Check the logged error in Cloud Run logs; `terraform apply` restores IAM bindings. Repeats at most every `ESTIMATOR_ALERT_INTERVAL_MINUTES` (default 60) per instance |
 | Scheduler job shows 403 | Invoker SA lost `roles/run.invoker` | `terraform apply` restores it |
+
+---
+
+# AWS: Amazon Bedrock
+
+The same pattern on AWS, in `aws/`: `handler.py` is the Lambda, and
+`terraform/` is a reusable module that the deploying repo calls.  What
+differs from GCP:
+
+| GCP | AWS |
+|---|---|
+| Consumer service account, JSON key | Consumer IAM user, one access key |
+| `DisableServiceAccountKey` | `UpdateAccessKey --status Inactive` (every active key) |
+| Billing budget -> Pub/Sub -> Cloud Run | AWS Budgets (100% actual) -> SNS -> Lambda |
+| Cloud Scheduler -> `/check-usage`, 48h window | EventBridge every 5 min, window = calendar month (UTC) |
+| Cloud Monitoring `token_count` | CloudWatch `AWS/BedrockMantle` `TotalInputTokens`/`TotalOutputTokens` (Model) and `AWS/Bedrock` `InputTokenCount`/`OutputTokenCount` (ModelId) |
+| A restore can be revoked again at once (see the R2 warning) | An override tag on the consumer user suppresses revocation until a set time |
+
+These differences in behaviour are deliberate:
+- **Input tokens are priced at the cache-write rate.**  Mantle publishes no
+  cache breakdown, so this is an upper bound.
+- **Once the key is revoked, the enforcer stays quiet.**  With no active key
+  it does nothing and posts nothing, so a tripped budget does not post on
+  every run.
+- **Estimator failure** (CloudWatch errors): a Slack warning, cat keeps
+  running, nothing is revoked.  The billing path still enforces.
+- **The budget is unfiltered.**  Claude bills as one Marketplace product
+  per model ("Claude Opus 5 (Amazon Bedrock Edition)").  Deploy it in an
+  account where this application is the only Bedrock workload.
+
+## AWS setup
+
+1. In the deploying repo, call `aws/terraform` as a module from a root
+   configuration whose provider pins `allowed_account_ids`.  Run
+   `terraform plan`, read it, and apply.  Then confirm the SNS email
+   subscriptions from the mailbox; until you do, the threshold and alarm
+   mails never arrive.
+2. Create the consumer's access key **by hand**, never in Terraform, which
+   would put it in state.  Using an admin profile:
+   `aws iam create-access-key --user-name <consumer>`.  Put the key pair
+   straight into the application's credentials file.  The application must
+   use a named profile from that file and nothing else, so that a disabled
+   key has no fallback:
+   - keep `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` unset in its
+     environment;
+   - give its host role no Bedrock permissions.
+3. Bedrock model access: an admin creates the Marketplace agreement for
+   each model once, before the consumer's first call.  The consumer has no
+   `aws-marketplace:*` permissions.
+
+## AWS test (before the application depends on it)
+
+1. `aws lambda invoke --function-name <name>-budget-enforcer --payload '{}' out.json`
+   prints the estimate; expect `"action": "none"`.
+2. Test revocation end to end by invoking with an event shaped like a
+   budget notification:
+   `{"Records":[{"EventSource":"aws:sns","Sns":{"Subject":"test","Message":"test"}}]}`.
+   Expect all of:
+   - `keys_disabled` in the output;
+   - the key Inactive (`aws iam list-access-keys --user-name <consumer>`);
+   - a Slack post;
+   - a failing Bedrock call made with the key.
+
+   Then recover as in R-AWS below, and confirm a call succeeds.
+
+## R-AWS: recover after a revocation
+
+Find the cause first, from the per-model CloudWatch metrics and the
+application's logs.  Then do the following, so that the next 5-minute check
+does not revoke the key again:
+
+```bash
+# 1. Set an override until a time of your choosing (UTC, ISO 8601)
+aws iam tag-user --user-name <consumer> \
+  --tags Key=budget-enforcer-override-until,Value=2026-11-01T00:00:00Z
+# 2. Re-enable the key
+aws iam list-access-keys --user-name <consumer>
+aws iam update-access-key --user-name <consumer> --access-key-id <id> --status Active
+```
+
+The override covers both paths and expires by itself.  To remove it early:
+`aws iam untag-user --user-name <consumer> --tag-keys budget-enforcer-override-until`.
+Raising the budget in Terraform also works, but it loosens the cap for the
+rest of the month.
+
+## AWS troubleshooting
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| "spend estimator unavailable" on Slack | CloudWatch API errors (throttling, permissions) | Lambda logs in `/aws/lambda/<name>-budget-enforcer` |
+| `<name>-budget-enforcer-not-running` alarm | EventBridge rule disabled, or the Lambda permission lost | `terraform plan` shows the drift |
+| `<name>-budget-enforcer-errors` alarm | An exception in the handler, for example `AccessDenied` on `UpdateAccessKey` from an SCP or the role policy | Lambda logs |
+| Estimate near zero while the app is busy | The model id is missing from the metric dimensions the handler reads, or the metrics are not yet published | `aws cloudwatch list-metrics --namespace AWS/BedrockMantle` |
+| An unknown model in the logs (`FALLBACK_PRICING`) | The model changed; add it to `PRICING` in `aws/handler.py` | AWS Price List `AmazonBedrockFoundationModels` |

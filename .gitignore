@@ -34,3 +34,7 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# AWS adapter build output and module-local init
+aws/terraform/.build/
+aws/terraform/.terraform.lock.hcl
