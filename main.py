@@ -154,6 +154,14 @@ COST_PER_CALL_FALLBACK = float(os.environ.get("COST_PER_CALL_FALLBACK", "0.30"))
 # To set up: Slack > your workspace > Apps > Incoming Webhooks > Add.
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
+# Minimum minutes between repeated "estimator unavailable" Slack warnings,
+# so a monitoring outage does not post every 5 minutes. Best effort only:
+# the timestamp lives in instance memory, and Cloud Run may start a fresh
+# instance, which can send one extra warning.
+ESTIMATOR_ALERT_INTERVAL_MINUTES = float(
+    os.environ.get("ESTIMATOR_ALERT_INTERVAL_MINUTES", "60"))
+_last_estimator_alert = None
+
 
 # ---------------------------------------------------------------------------
 # POST / — Billing-based enforcement (Pub/Sub from GCP Billing Budget)
@@ -233,12 +241,35 @@ def check_usage():
     # If token metrics returned nothing, fall back to call counting
     if result.get("total_tokens", 0) == 0 and result.get("estimated_spend", 0) == 0:
         fallback = _estimate_spend_from_call_count()
-        if fallback.get("total_calls", 0) > 0:
-            result = fallback
-            print(
-                f"Token metrics returned no data. "
-                f"Fell back to call_count estimator."
-            )
+        token_error = result.get("error")
+        if fallback.get("error"):
+            # Both queries unusable only if the token query failed too;
+            # a token query that worked and saw nothing means idle.
+            if token_error:
+                result = {**fallback, "error": (
+                    f"token_count: {token_error}; "
+                    f"response_count: {fallback['error']}")}
+            else:
+                result["fallback_error"] = fallback["error"]
+        else:
+            if fallback.get("total_calls", 0) > 0:
+                result = fallback
+                print(
+                    f"Token metrics returned no data. "
+                    f"Fell back to call_count estimator."
+                )
+            if token_error:
+                # Degraded but not blind: the call count stands in.
+                result = {**result, "token_error": token_error}
+                result.pop("error", None)
+
+    # The estimators return estimated_spend 0 on an exception. Without this
+    # check an outage of the monitoring API reads as "no spend": nothing is
+    # disabled and nobody is told, leaving only the slow billing path.
+    # Posture: warn on Slack and keep running; do not disable keys.
+    if result.get("error"):
+        result["estimator_error"] = result["error"]
+        _warn_estimator_unavailable(result)
 
     estimated_spend = result["estimated_spend"]
     result["threshold"] = threshold
@@ -494,6 +525,31 @@ def disable_service_account_keys(reason=""):
         _notify_slack(reason, disabled_keys)
 
 
+def _warn_estimator_unavailable(result):
+    """Post a Slack warning that the flux estimator could not run.
+
+    Rate-limited by ESTIMATOR_ALERT_INTERVAL_MINUTES. Does not disable
+    keys: the billing path (POST /) still enforces the budget.
+    """
+    global _last_estimator_alert
+    now = datetime.now(timezone.utc)
+    print(f"WARNING: flux estimator unavailable: {result.get('error')}")
+    if (_last_estimator_alert is not None and
+            now - _last_estimator_alert <
+            timedelta(minutes=ESTIMATOR_ALERT_INTERVAL_MINUTES)):
+        return
+    _last_estimator_alert = now
+    _post_slack(
+        f":warning: *Budget Enforcer: spend estimator unavailable*\n"
+        f"*Project:* `{PROJECT_ID}`\n"
+        f"*Error:* {result.get('error')}\n"
+        f"Keys are *not* disabled. Until the estimator recovers, only the "
+        f"billing path enforces the budget (12-24h lag). See "
+        f"`docs/SOP.md` troubleshooting. Repeats at most every "
+        f"{ESTIMATOR_ALERT_INTERVAL_MINUTES:g} minutes per instance."
+    )
+
+
 def _notify_slack(reason, disabled_keys):
     """Post a notification to Slack when keys are disabled.
 
@@ -505,19 +561,23 @@ def _notify_slack(reason, disabled_keys):
         return
 
     key_count = len(disabled_keys)
-    message = {
-        "text": (
-            f":rotating_light: *Budget Enforcer triggered* — "
-            f"{key_count} key(s) disabled\n"
-            f"*Project:* `{PROJECT_ID}`\n"
-            f"*Consumer SA:* `{SERVICE_ACCOUNT_EMAIL}`\n"
-            f"*Reason:* {reason}\n"
-            f"*Recovery:* Re-enable keys and adjust budget. "
-            f"See `docs/SOP.md` recovery section (R1-R4)."
-        ),
-    }
+    _post_slack(
+        f":rotating_light: *Budget Enforcer triggered* — "
+        f"{key_count} key(s) disabled\n"
+        f"*Project:* `{PROJECT_ID}`\n"
+        f"*Consumer SA:* `{SERVICE_ACCOUNT_EMAIL}`\n"
+        f"*Reason:* {reason}\n"
+        f"*Recovery:* Re-enable keys and adjust budget. "
+        f"See `docs/SOP.md` recovery section (R1-R4)."
+    )
 
-    data = json.dumps(message).encode("utf-8")
+
+def _post_slack(text):
+    """Post one message to SLACK_WEBHOOK_URL. Logs, never raises."""
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    data = json.dumps({"text": text}).encode("utf-8")
     req = urllib.request.Request(
         SLACK_WEBHOOK_URL,
         data=data,
