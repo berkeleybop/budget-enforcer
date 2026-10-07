@@ -193,6 +193,14 @@ also useful as a human onboarding document — it covers:
 - Pricing table maintenance checklist (what to check and when)
 - Common tasks as a quick-reference
 
+## AWS (Amazon Bedrock)
+
+`aws/` holds the same enforcer for Bedrock: a Lambda function
+(`aws/handler.py`) and a Terraform module (`aws/terraform/`) that a
+deploying repo calls.  The consumer is an IAM user with one access key, and
+enforcement sets that key Inactive.  See the AWS section of
+[`docs/SOP.md`](docs/SOP.md).  Tests: `python3 -m pytest tests/`.
+
 ## Recovery
 
 When keys are disabled by the budget-enforcer:
