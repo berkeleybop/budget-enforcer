@@ -108,6 +108,7 @@ The flux estimator has a few extra knobs (all optional, defaults work):
 | `enforcement_tolerance` | How strict to be (0.8 = cut off early, 1.2 = allow some overshoot) | 1.0 |
 | `flux_window_hours` | How far back to look at usage data | 48 |
 | `cost_per_call_fallback` | Per-call cost if token metrics unavailable | $0.30 |
+| `ESTIMATOR_ALERT_INTERVAL_MINUTES` (env) | Minimum gap between Slack warnings when the estimator cannot run | 60 |
 
 Per-model pricing (Opus vs Haiku vs Gemini, etc.) and prompt cache
 discounts are built into `main.py`. A 10% regional premium is applied

@@ -416,4 +416,5 @@ but no 100% email and keys aren't disabled, check Cloud Run logs for
 | Flux estimate is $0 but usage exists | Model not in PRICING dict in `main.py` | Add the model, rebuild container, `terraform apply` |
 | Flux estimate much higher than billing | Regional premium or fallback pricing too conservative | Check `/status` endpoint; adjust `enforcement_tolerance` |
 | Slack notification not sent | `SLACK_WEBHOOK_URL` empty or webhook expired | Check `terraform.tfvars`; test webhook URL manually |
+| Slack "spend estimator unavailable" warning | Both Cloud Monitoring queries (`token_count` and `response_count`) failed: API outage, throttling, or the admin SA lost `monitoring.viewer`. Keys are **not** disabled; only the billing path enforces until it recovers | Check the logged error in Cloud Run logs; `terraform apply` restores IAM bindings. Repeats at most every `ESTIMATOR_ALERT_INTERVAL_MINUTES` (default 60) per instance |
 | Scheduler job shows 403 | Invoker SA lost `roles/run.invoker` | `terraform apply` restores it |
