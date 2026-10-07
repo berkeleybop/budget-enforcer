@@ -47,12 +47,17 @@ variable "allowed_runtime_model_arns" {
   default     = []
   description = <<-EOT
     Foundation-model ARNs the consumer may call with bedrock:InvokeModel on
-    the bedrock-runtime endpoint (embeddings, for example).
+    the bedrock-runtime endpoint (embeddings, for example).  Same region as
+    the deployment: the enforcer reads CloudWatch in its own region only.
   EOT
 }
 
 variable "alert_emails" {
-  type        = list(string)
+  type = list(string)
+  validation {
+    condition     = length(var.alert_emails) > 0
+    error_message = "At least one address: AWS Budgets rejects a notification with no subscriber."
+  }
   description = <<-EOT
     Recipients of the budget threshold emails and of the enforcer-health
     alarms.  SNS email subscriptions must be confirmed from the mailbox.
@@ -62,7 +67,10 @@ variable "alert_emails" {
 variable "email_thresholds_percent" {
   type        = list(number)
   default     = [50, 75, 90, 95, 100]
-  description = "Actual-spend thresholds that send email.  100 also triggers enforcement."
+  description = <<-EOT
+    Actual-spend warning thresholds (email).  Values below 100 are used; the
+    100 percent notification that triggers enforcement is always created.
+  EOT
 }
 
 variable "slack_webhook_url" {
@@ -75,7 +83,10 @@ variable "slack_webhook_url" {
 variable "schedule_expression" {
   type        = string
   default     = "rate(5 minutes)"
-  description = "How often the flux path runs."
+  description = <<-EOT
+    How often the flux path runs.  The not-running alarm assumes every 5
+    minutes (three empty 5-minute periods); change both together.
+  EOT
 }
 
 variable "tags" {

@@ -24,6 +24,6 @@ output "alarm_topic_arn" {
 }
 
 output "test_invoke_command" {
-  description = "Run the flux check once, now (append your --profile)."
+  description = "Run the flux check once, now (append your --profile; with AWS CLI v2 add --cli-binary-format raw-in-base64-out)."
   value       = "aws lambda invoke --function-name ${aws_lambda_function.enforcer.function_name} --payload '{}' /dev/stdout"
 }

@@ -22,6 +22,15 @@ locals {
 resource "aws_iam_user" "consumer" {
   name = var.consumer_user_name
   tags = var.tags
+
+  # The override tag is set by operators during recovery (docs/SOP.md,
+  # R-AWS); a later apply must not strip it and undo the recovery.
+  lifecycle {
+    ignore_changes = [
+      tags["budget-enforcer-override-until"],
+      tags_all["budget-enforcer-override-until"],
+    ]
+  }
 }
 
 data "aws_iam_policy_document" "consumer" {
@@ -93,6 +102,11 @@ data "aws_iam_policy_document" "enforcer" {
     resources = ["*"]
   }
   statement {
+    sid       = "AnnounceRevocations"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alarms.arn]
+  }
+  statement {
     sid       = "OwnLogs"
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["${aws_cloudwatch_log_group.enforcer.arn}:*"]
@@ -114,7 +128,9 @@ resource "aws_cloudwatch_log_group" "enforcer" {
 data "archive_file" "handler" {
   type        = "zip"
   source_file = "${path.module}/../handler.py"
-  output_path = "${path.module}/.build/handler.zip"
+  # Under the root module's .terraform/, which is writable even when this
+  # module comes from a read-only cache.
+  output_path = "${path.root}/.terraform/tmp/${local.fn_name}-handler.zip"
 }
 
 resource "aws_lambda_function" "enforcer" {
@@ -140,11 +156,28 @@ resource "aws_lambda_function" "enforcer" {
       FLUX_WINDOW           = var.flux_window
       SLACK_WEBHOOK_URL     = var.slack_webhook_url
       DEPLOYMENT_NAME       = var.name
+      ALARM_TOPIC_ARN       = aws_sns_topic.alarms.arn
+      CONFIGURED_MODELS = join(",", concat(
+        var.allowed_mantle_models,
+        [for arn in var.allowed_runtime_model_arns : element(split("/", arn), length(split("/", arn)) - 1)],
+      ))
     }
   }
 
   depends_on = [aws_cloudwatch_log_group.enforcer, aws_iam_role_policy.enforcer]
   tags       = var.tags
+}
+
+# A billing notification arrives once.  If its invocation fails after
+# Lambda's retries, mail the operators rather than drop it silently.
+resource "aws_lambda_function_event_invoke_config" "enforcer" {
+  function_name          = aws_lambda_function.enforcer.function_name
+  maximum_retry_attempts = 2
+  destination_config {
+    on_failure {
+      destination = aws_sns_topic.alarms.arn
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -192,6 +225,11 @@ data "aws_iam_policy_document" "budget_topic" {
       variable = "aws:SourceAccount"
       values   = [local.account_id]
     }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${local.partition}:budgets::${local.account_id}:*"]
+    }
   }
 }
 
@@ -201,9 +239,10 @@ resource "aws_sns_topic_policy" "budget" {
 }
 
 resource "aws_sns_topic_subscription" "budget_to_lambda" {
-  topic_arn = aws_sns_topic.budget.arn
-  protocol  = "lambda"
-  endpoint  = aws_lambda_function.enforcer.arn
+  topic_arn  = aws_sns_topic.budget.arn
+  protocol   = "lambda"
+  endpoint   = aws_lambda_function.enforcer.arn
+  depends_on = [aws_lambda_permission.budget]
 }
 
 resource "aws_lambda_permission" "budget" {
@@ -225,16 +264,26 @@ resource "aws_budgets_budget" "monthly" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
+  # Warnings: email only, below 100 percent.
   dynamic "notification" {
-    for_each = var.email_thresholds_percent
+    for_each = [for t in var.email_thresholds_percent : t if t < 100]
     content {
       comparison_operator        = "GREATER_THAN"
       threshold                  = notification.value
       threshold_type             = "PERCENTAGE"
       notification_type          = "ACTUAL"
       subscriber_email_addresses = var.alert_emails
-      subscriber_sns_topic_arns  = notification.value >= 100 ? [aws_sns_topic.budget.arn] : []
     }
+  }
+
+  # Enforcement: always present, independent of the warning list.
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = var.alert_emails
+    subscriber_sns_topic_arns  = [aws_sns_topic.budget.arn]
   }
 
   depends_on = [aws_sns_topic_policy.budget]
@@ -248,6 +297,37 @@ resource "aws_budgets_budget" "monthly" {
 resource "aws_sns_topic" "alarms" {
   name = "${local.fn_name}-alarms"
   tags = var.tags
+}
+
+data "aws_iam_policy_document" "alarms_topic" {
+  statement {
+    sid       = "CloudWatchAlarms"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.alarms.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudwatch.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [local.account_id]
+    }
+  }
+  statement {
+    sid       = "AccountPrincipals"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.alarms.arn]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "alarms" {
+  arn    = aws_sns_topic.alarms.arn
+  policy = data.aws_iam_policy_document.alarms_topic.json
 }
 
 resource "aws_sns_topic_subscription" "alarm_emails" {

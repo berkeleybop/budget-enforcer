@@ -46,16 +46,24 @@ class FakeIAM:
 
 
 class FakeCW:
-    """series: {(namespace, metric, dim, model): [hourly values]}"""
-    def __init__(self, series=None, fail=None):
+    """series: {(namespace, metric, dim, model): [values]}
+
+    listed: which models ListMetrics reports (default: all with data), to
+    model its two-week horizon.  status: StatusCode for GetMetricData.
+    """
+    def __init__(self, series=None, fail=None, listed=None, status="Complete"):
         self.series = series or {}
         self.fail = fail
+        self.listed = listed
+        self.status = status
 
     def list_metrics(self, Namespace, MetricName, NextToken=None):
         if self.fail:
             raise RuntimeError(self.fail)
         out = []
         for (ns, metric, dim, model) in self.series:
+            if self.listed is not None and model not in self.listed:
+                continue
             if ns == Namespace and metric == MetricName:
                 out.append({"Dimensions": [{"Name": dim, "Value": model}]})
                 # a second series with an extra dimension must be ignored
@@ -67,7 +75,9 @@ class FakeCW:
         m = MetricDataQueries[0]["MetricStat"]["Metric"]
         d = m["Dimensions"][0]
         vals = self.series.get((m["Namespace"], m["MetricName"], d["Name"], d["Value"]), [])
-        return {"MetricDataResults": [{"Values": vals}]}
+        if self.status != "Complete":
+            return {"MetricDataResults": [{"Values": [], "StatusCode": self.status}]}
+        return {"MetricDataResults": [{"Values": vals, "StatusCode": "Complete"}]}
 
 
 def opus(input_tokens, output_tokens):
@@ -128,7 +138,7 @@ def test_unknown_model_uses_fallback_pricing(handler):
     series = {("AWS/BedrockMantle", "TotalInputTokens", "Model", "anthropic.claude-future-9"): [1_000_000]}
     r = run(handler, FakeIAM(), FakeCW(series))
     assert r["per_model"]["anthropic.claude-future-9"]["pricing"] == "fallback"
-    assert r["estimated_spend"] == pytest.approx(6.875, abs=0.01)
+    assert r["estimated_spend"] == pytest.approx(18.75, abs=0.01)
 
 
 def test_titan_counted_from_bedrock_namespace(handler):
@@ -178,3 +188,61 @@ def test_missing_consumer_user_fails_loudly(handler, monkeypatch):
     monkeypatch.setattr(handler, "CONSUMER_USER", "")
     with pytest.raises(RuntimeError):
         run(handler, FakeIAM(), FakeCW())
+
+
+class FakeSNS:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, TopicArn, Subject, Message):
+        self.published.append((TopicArn, Subject))
+
+
+def test_usage_older_than_listmetrics_horizon_still_counts(handler):
+    # ListMetrics no longer reports Opus (idle for two weeks), but its
+    # early-month tokens must still be summed: PRICING models are queried.
+    cw = FakeCW(opus(40_000_000, 1_000_000), listed=set())
+    r = run(handler, FakeIAM(), cw)
+    assert r["action"] == "keys_disabled"
+
+
+def test_configured_model_queried_even_if_unlisted(handler, monkeypatch):
+    monkeypatch.setattr(handler, "CONFIGURED_MODELS", ["anthropic.claude-new-6"])
+    series = {("AWS/BedrockMantle", "TotalOutputTokens", "Model", "anthropic.claude-new-6"): [5_000_000]}
+    r = run(handler, FakeIAM(), FakeCW(series, listed=set()))
+    assert r["action"] == "keys_disabled"            # 5M x 75 fallback = 375
+
+
+def test_inband_getmetricdata_error_warns_not_zero(handler):
+    iam = FakeIAM()
+    r = run(handler, iam, FakeCW(opus(1, 1), status="InternalError"))
+    assert "InternalError" in r["estimator_error"]
+    assert iam.updates == [] and len(handler.posts) == 1
+
+
+def test_partialdata_is_pagination_not_error(handler):
+    r = run(handler, FakeIAM(), FakeCW(opus(1_000_000, 0), status="PartialData"))
+    assert "estimator_error" not in r
+
+
+def test_naive_override_treated_as_utc(handler):
+    iam = FakeIAM(tags=[{"Key": "budget-enforcer-override-until", "Value": "2026-10-21T00:00:00"}])
+    assert run(handler, iam, FakeCW(opus(40_000_000, 1_000_000)))["action"] == "override"
+
+
+def test_override_with_whitespace_and_lowercase_z(handler):
+    iam = FakeIAM(tags=[{"Key": "budget-enforcer-override-until", "Value": " 2026-10-21T00:00:00z "}])
+    assert run(handler, iam, FakeCW(opus(40_000_000, 1_000_000)))["action"] == "override"
+
+
+def test_sns_record_none_does_not_crash(handler):
+    event = {"Records": [{"EventSource": "aws:sns", "Sns": None}]}
+    assert run(handler, FakeIAM(), FakeCW(), event)["action"] == "keys_disabled"
+
+
+def test_revocation_also_published_to_alarm_topic(handler, monkeypatch):
+    monkeypatch.setattr(handler, "ALARM_TOPIC_ARN", "arn:aws:sns:us-east-1:111111111111:alarms")
+    sns = FakeSNS()
+    r = handler.lambda_handler({"source": "aws.events"}, now=NOW, iam=FakeIAM(),
+                               cloudwatch=FakeCW(opus(40_000_000, 1_000_000)), sns=sns)
+    assert r["action"] == "keys_disabled" and len(sns.published) == 1

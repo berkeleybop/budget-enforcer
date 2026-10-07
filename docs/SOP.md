@@ -447,6 +447,16 @@ These differences in behaviour are deliberate:
 - **The budget is unfiltered.**  Claude bills as one Marketplace product
   per model ("Claude Opus 5 (Amazon Bedrock Edition)").  Deploy it in an
   account where this application is the only Bedrock workload.
+- **Every revocation is also emailed,** through the module's alarms topic,
+  as well as posted to Slack, so a Slack outage cannot hide it.  If a
+  billing notification fails after Lambda's retries, it goes to the same
+  topic.
+- **Do not enable default (AWS-managed key) encryption on the module's SNS
+  topics.**  Neither AWS Budgets nor CloudWatch can publish to a topic
+  encrypted with `alias/aws/sns`.
+- **The month-to-date sum queries every configured and priced model,**
+  not only the ones CloudWatch lists.  ListMetrics only returns series with
+  data in the last two weeks.
 
 ## AWS setup
 
@@ -471,7 +481,8 @@ These differences in behaviour are deliberate:
 ## AWS test (before the application depends on it)
 
 1. `aws lambda invoke --function-name <name>-budget-enforcer --payload '{}' out.json`
-   prints the estimate; expect `"action": "none"`.
+   prints the estimate; expect `"action": "none"`.  With AWS CLI v2, add
+   `--cli-binary-format raw-in-base64-out`.
 2. Test revocation end to end by invoking with an event shaped like a
    budget notification:
    `{"Records":[{"EventSource":"aws:sns","Sns":{"Subject":"test","Message":"test"}}]}`.

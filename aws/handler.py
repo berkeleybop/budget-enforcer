@@ -53,8 +53,10 @@ PRICING = {
     "anthropic.claude-opus-5-5": {"input": 5.50,  "output": 22.00},
     "amazon.titan-embed-text-v2:0": {"input": 0.02, "output": 0.0},
 }
-# The most expensive entry, so an unknown model is overestimated.
-FALLBACK_PRICING = {"input": 6.875, "output": 27.50}
+# For a model missing from PRICING.  Deliberately above every current Claude
+# rate on Bedrock (Claude 3 Opus: input 15.00, cache write 18.75, output
+# 75.00), so an unlisted model is overestimated, never under.
+FALLBACK_PRICING = {"input": 18.75, "output": 75.00}
 
 OVERRIDE_TAG = "budget-enforcer-override-until"
 
@@ -76,21 +78,35 @@ ENFORCEMENT_TOLERANCE = _env_float("ENFORCEMENT_TOLERANCE", "1.0")
 FLUX_WINDOW = os.environ.get("FLUX_WINDOW", "month")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 DEPLOYMENT_NAME = os.environ.get("DEPLOYMENT_NAME", "budget-enforcer")
+# Optional SNS topic (the module's alarms topic, which mails the operators):
+# every revocation is also published there, so a Slack outage at the moment
+# of revocation does not leave it unannounced.
+ALARM_TOPIC_ARN = os.environ.get("ALARM_TOPIC_ARN", "")
+# Models the consumer may call (comma-separated ids, set by Terraform).
+# Always queried, because ListMetrics only returns series with data in the
+# last two weeks, and month-to-date must include earlier usage.
+CONFIGURED_MODELS = [m.strip() for m in
+                     os.environ.get("CONFIGURED_MODELS", "").split(",") if m.strip()]
 ESTIMATOR_ALERT_INTERVAL_MINUTES = _env_float(
     "ESTIMATOR_ALERT_INTERVAL_MINUTES", "60")
 
 _last_estimator_alert = None
+_sns = None
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def lambda_handler(event, context=None, now=None, iam=None, cloudwatch=None):
+def lambda_handler(event, context=None, now=None, iam=None, cloudwatch=None,
+                   sns=None):
     """Route an SNS (billing) or scheduled (flux) invocation."""
+    global _sns
     now = now or datetime.now(timezone.utc)
     iam = iam or boto3.client("iam")
     cloudwatch = cloudwatch or boto3.client("cloudwatch")
+    _sns = sns if sns is not None else (
+        boto3.client("sns") if ALARM_TOPIC_ARN else None)
 
     if not CONSUMER_USER:
         raise RuntimeError("CONSUMER_USER is not set")
@@ -111,8 +127,9 @@ def handle_budget_notification(records, now, iam):
     Only the 100% notification is wired to the SNS topic (lower thresholds
     are email-only), so any message on the topic means "revoke".
     """
-    subject = records[0].get("Sns", {}).get("Subject") or "AWS Budgets"
-    message = (records[0].get("Sns", {}).get("Message") or "")[:500]
+    sns_record = records[0].get("Sns") or {}
+    subject = sns_record.get("Subject") or "AWS Budgets"
+    message = (sns_record.get("Message") or "")[:500]
     reason = f"Billing path: {subject}. {message}".strip()
     print(reason)
     return enforce(reason, now, iam)
@@ -165,13 +182,18 @@ def token_totals(cloudwatch, start, end):
     """Sum input and output tokens per model over [start, end)."""
     totals = {}
     for namespace, dim, in_metric, out_metric in METRIC_SOURCES:
-        for metric_name, kind in ((in_metric, "input"), (out_metric, "output")):
-            models = _models_with_metric(cloudwatch, namespace, metric_name, dim)
-            for model in models:
+        # Discovery sees only the last two weeks; the configured and priced
+        # models are queried regardless, so early-month usage still counts.
+        models = (set(_models_with_metric(cloudwatch, namespace, in_metric, dim))
+                  | set(_models_with_metric(cloudwatch, namespace, out_metric, dim))
+                  | set(CONFIGURED_MODELS) | set(PRICING))
+        for model in sorted(models):
+            for metric_name, kind in ((in_metric, "input"), (out_metric, "output")):
                 total = _sum_metric(cloudwatch, namespace, metric_name,
                                     dim, model, start, end)
-                totals.setdefault(model, {"input": 0, "output": 0})
-                totals[model][kind] += total
+                if total:
+                    totals.setdefault(model, {"input": 0, "output": 0})
+                    totals[model][kind] += total
     return totals
 
 
@@ -200,7 +222,9 @@ def _sum_metric(cloudwatch, namespace, metric_name, dim, value, start, end):
             "MetricStat": {
                 "Metric": {"Namespace": namespace, "MetricName": metric_name,
                            "Dimensions": [{"Name": dim, "Value": value}]},
-                "Period": 3600,
+                # 5-minute buckets: retained 63 days, so a whole month fits,
+                # and the first hour of a month is not blind.
+                "Period": 300,
                 "Stat": "Sum",
             },
         }],
@@ -210,6 +234,13 @@ def _sum_metric(cloudwatch, namespace, metric_name, dim, value, start, end):
     while True:
         page = cloudwatch.get_metric_data(**kwargs)
         for r in page.get("MetricDataResults", []):
+            # GetMetricData reports failures in-band with HTTP 200.
+            # "PartialData" is normal pagination (a NextToken follows).
+            status = r.get("StatusCode", "Complete")
+            if status not in ("Complete", "PartialData"):
+                raise RuntimeError(
+                    f"GetMetricData {namespace}/{metric_name} {value}: "
+                    f"{status} {r.get('Messages')}")
             total += sum(r.get("Values", []))
         token = page.get("NextToken")
         if not token:
@@ -239,11 +270,20 @@ def price(totals):
 
 def override_until(iam, now):
     """The override expiry if one is in force, else None."""
-    tags = iam.list_user_tags(UserName=CONSUMER_USER).get("Tags", [])
+    tags, kwargs = [], {"UserName": CONSUMER_USER}
+    while True:
+        page = iam.list_user_tags(**kwargs)
+        tags += page.get("Tags", [])
+        if not page.get("IsTruncated"):
+            break
+        kwargs["Marker"] = page["Marker"]
     for tag in tags:
         if tag["Key"] == OVERRIDE_TAG:
+            value = tag["Value"].strip()
+            if value[-1:] in ("Z", "z"):
+                value = value[:-1] + "+00:00"
             try:
-                until = datetime.fromisoformat(tag["Value"].replace("Z", "+00:00"))
+                until = datetime.fromisoformat(value)
             except ValueError:
                 print(f"WARNING: unparseable {OVERRIDE_TAG}={tag['Value']!r}; ignored")
                 return None
@@ -274,6 +314,10 @@ def enforce(reason, now, iam):
                               Status="Inactive")
         disabled.append(key_id)
     print(f"Disabled {len(disabled)} key(s) of {CONSUMER_USER}: {reason}")
+    publish_alarm(
+        f"{DEPLOYMENT_NAME}: budget enforcer disabled {len(disabled)} key(s)",
+        f"{len(disabled)} key(s) of {CONSUMER_USER} disabled.\n"
+        f"Reason: {reason}\nRecovery: docs/SOP.md, R-AWS.")
     post_slack(
         f":rotating_light: *Budget Enforcer triggered* ({DEPLOYMENT_NAME}): "
         f"{len(disabled)} key(s) of `{CONSUMER_USER}` disabled\n"
@@ -307,6 +351,17 @@ def warn_estimator_unavailable(error, now):
         f"enforces the budget (about a day behind).  Repeats at most every "
         f"{ESTIMATOR_ALERT_INTERVAL_MINUTES:g} minutes per instance."
     )
+
+
+def publish_alarm(subject, text):
+    """Publish to ALARM_TOPIC_ARN (email).  Logs, never raises."""
+    if not (ALARM_TOPIC_ARN and _sns):
+        return
+    try:
+        _sns.publish(TopicArn=ALARM_TOPIC_ARN, Subject=subject[:99],
+                     Message=text)
+    except Exception as e:  # noqa: BLE001 -- notification must not block
+        print(f"Alarm topic publish failed: {e}")
 
 
 def post_slack(text):
