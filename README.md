@@ -1,8 +1,20 @@
 # budget-enforcer
 
-Automatic budget enforcement for Vertex AI on GCP. When spending exceeds
-a configured threshold, this service disables the API consumer service
-account's keys, immediately halting Vertex AI API calls.
+Automatic budget enforcement for LLM API spend, on two providers with one
+pattern: a dedicated consumer identity holds the application's only API
+credential, and when spending exceeds a configured threshold the enforcer
+disables that credential, immediately halting the calls.
+
+- **Google Cloud, Vertex AI**: a Cloud Run service (`main.py`,
+  `terraform/`) disables the consumer service account's keys.  This is
+  the original deployment and most of this README describes it.
+- **AWS, Amazon Bedrock**: a Lambda function and a reusable Terraform
+  module (`aws/`) set the consumer IAM user's access key Inactive.  See
+  [AWS (Amazon Bedrock)](#aws-amazon-bedrock) below and the AWS section
+  of [`docs/SOP.md`](docs/SOP.md).
+
+Both have a billing path (the provider's budget notification, accurate but
+a day behind) and a 5-minute estimator from token metrics.
 
 ## How we work with this repo
 
@@ -118,13 +130,16 @@ see [`CLAUDE.md`](CLAUDE.md) for sources and what to check.
 
 ## Architecture
 
-Three service accounts, each with a distinct role:
+Three identities, each with a distinct role, on either provider:
 
-| Identity | Role | Purpose |
-|---|---|---|
-| **Personal (Owner)** | Owner | IAM policy bindings on Cloud Run |
-| **Admin SA** | Editor, SA Key Admin, etc. | Runs this Cloud Run service; disables consumer keys |
-| **Consumer SA** | Vertex AI User | Used by applications; gets its keys disabled |
+| Identity | GCP | AWS | Purpose |
+|---|---|---|---|
+| **Operator** | Personal account, Owner | The admin profile that runs Terraform | IAM bindings; creates the consumer's key by hand on AWS |
+| **Enforcer** | Admin SA (Editor, SA Key Admin, etc.) running Cloud Run | Lambda execution role `<name>-budget-enforcer` | Runs the enforcer; may disable the consumer's keys and nothing else |
+| **Consumer** | Consumer SA (Vertex AI User) | IAM user with a Bedrock-only policy | Used by applications; gets its keys disabled |
+
+Never confuse them: the enforcer disables the consumer's keys; pointed at
+its own identity it would lock itself out.
 
 ## Setup
 
@@ -175,9 +190,15 @@ terraform/
   versions.tf                   # Provider version constraints
   backend.tf                    # State management docs
   terraform.tfvars.example      # Template for your variables
+aws/
+  handler.py                    # The AWS enforcer (Lambda, Python 3.12, boto3 only)
+  terraform/                    # Reusable module: consumer user, enforcer role, Lambda,
+                                #   schedule, budget, SNS topics, alarms (no provider block)
+tests/
+  test_aws_handler.py           # AWS handler tests with in-memory fakes (python3 -m pytest tests/)
 docs/
-  SOP.md                        # Full operational runbook
-  MANUAL_STEPS.md               # Steps that cannot be automated
+  SOP.md                        # Full operational runbook (GCP, then an AWS section)
+  MANUAL_STEPS.md               # Steps that cannot be automated (GCP)
 ```
 
 ### CLAUDE.md

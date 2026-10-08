@@ -16,15 +16,35 @@ The developer makes decisions. You execute. The docs serve both of you.
 
 ## What this repo is
 
-A GCP Cloud Run service that enforces Vertex AI spending limits by
-disabling service account keys when budget thresholds are exceeded.
-Used by the BBOP group at Lawrence Berkeley National Lab.
+Budget enforcement for LLM API spend by disabling the consumer identity's
+credential when a threshold is exceeded, on two providers:
+
+- **GCP / Vertex AI**: a Cloud Run service (`main.py`, `terraform/`) that
+  disables the consumer service account's keys.  The original, and what
+  most of this file describes.
+- **AWS / Amazon Bedrock** (added 2026-10): a Lambda and a reusable
+  Terraform module in `aws/` that set the consumer IAM user's access key
+  Inactive.  The module is applied from the deploying repo, not from
+  here; `docs/SOP.md` has an AWS section (setup, test, recovery,
+  troubleshooting).
+
+Used by the BBOP group at Lawrence Berkeley National Lab (GCP) and the
+RAPID SI/IV&V project there (AWS).
 
 ## Key concepts
 
-- **Three-identity model**: Personal (Owner), Admin SA, Consumer SA.
-  Never confuse them. The budget-enforcer disables the Consumer SA's
-  keys — if it targets the Admin SA instead, it locks itself out.
+- **Three-identity model**, on both providers: the operator (Personal
+  Owner on GCP; the admin Terraform profile on AWS), the enforcer (Admin
+  SA on GCP; the Lambda role on AWS), the consumer (Consumer SA on GCP;
+  an IAM user with a Bedrock-only policy on AWS). Never confuse them. The
+  budget-enforcer disables the consumer's keys — if it targeted its own
+  identity instead, it would lock itself out.
+- **AWS differences that are deliberate**: the consumer's access key is
+  created by hand, never in Terraform (keeps it out of state); an
+  operator override tag on the consumer user suppresses revocation until a
+  set time, so a restore is not undone by the next run; input tokens are
+  priced at the cache-write rate (Mantle metrics carry no cache split);
+  once revoked, the enforcer stays quiet. All in `docs/SOP.md`, AWS section.
 - **Budget scopes to ALL services**, not just "Vertex AI". Claude model
   charges bill under a marketplace service category. A budget scoped
   only to "Vertex AI" will miss most of the actual spend.
@@ -43,10 +63,19 @@ Used by the BBOP group at Lawrence Berkeley National Lab.
 - `terraform/` — Infrastructure-as-code for all GCP resources
 - `terraform/variables.tf` — All configurable parameters with descriptions
 - `terraform/terraform.tfvars.example` — Template; copy to `.tfvars` and fill in
-- `docs/SOP.md` — Full operational runbook (manual procedures, recovery)
-- `docs/MANUAL_STEPS.md` — Steps that Terraform cannot automate
+- `docs/SOP.md` — Full operational runbook (manual procedures, recovery);
+  GCP first, then an AWS section
+- `docs/MANUAL_STEPS.md` — Steps that Terraform cannot automate (GCP)
+- `aws/handler.py` — The AWS enforcer (Lambda, Python 3.12, stdlib + boto3)
+- `aws/terraform/` — Reusable AWS module (no provider block; the deploying
+  repo pins the provider, account and a commit `ref`)
+- `tests/test_aws_handler.py` — AWS handler tests (`python3 -m pytest tests/`)
 
 ## Working with Terraform
+
+The commands below are the GCP deployment (`terraform/`, local state).
+The AWS module is never applied from this repo: a deploying repo calls
+`aws/terraform` as a module pinned to a commit, and applies there.
 
 ```bash
 cd terraform/
